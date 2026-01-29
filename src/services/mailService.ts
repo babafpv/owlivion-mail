@@ -7,7 +7,7 @@ import type {
   Account,
   NewAccount,
   AutoConfig,
-  Folder,
+  ImapFolder,
   EmailSummary,
   Email,
   DraftEmail,
@@ -135,10 +135,10 @@ export async function setDefaultAccount(accountId: number): Promise<void> {
 // ============================================================================
 
 /**
- * List folders for an account
+ * List folders for an account (from IMAP server)
  */
-export async function listFolders(accountId: string): Promise<Folder[]> {
-  return invoke<Folder[]>('folder_list', { accountId });
+export async function listFolders(accountId: string): Promise<ImapFolder[]> {
+  return invoke<ImapFolder[]>('folder_list', { accountId });
 }
 
 /**

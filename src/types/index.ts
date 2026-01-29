@@ -136,7 +136,19 @@ export interface AutoConfig {
   detectionMethod?: string;
 }
 
-// Folder
+// Folder from IMAP server
+export interface ImapFolder {
+  name: string;
+  path: string;
+  folder_type: FolderType;
+  delimiter: string;
+  is_subscribed: boolean;
+  is_selectable: boolean;
+  unread_count: number;
+  total_count: number;
+}
+
+// Folder (legacy/local)
 export interface Folder {
   id: number;
   accountId: number;
@@ -149,7 +161,7 @@ export interface Folder {
   isSelectable: boolean;
 }
 
-export type FolderType = 'inbox' | 'sent' | 'drafts' | 'trash' | 'spam' | 'archive' | 'starred' | 'custom';
+export type FolderType = 'Inbox' | 'Sent' | 'Drafts' | 'Trash' | 'Spam' | 'Archive' | 'Starred' | 'Custom' | 'All' | 'Junk';
 
 // Trusted sender
 export interface TrustedSender {

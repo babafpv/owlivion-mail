@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import "./App.css";
 import owlivionIcon from "./assets/owlivion-logo.svg";
 import { Settings } from "./pages/Settings";
@@ -9,7 +9,7 @@ import { Welcome } from "./components/Welcome";
 import { AddAccountModal } from "./components/settings/AddAccountModal";
 import { summarizeEmail } from "./services/geminiService";
 import { requestNotificationPermission, showNewEmailNotification, playNotificationSound } from "./services/notificationService";
-import type { DraftEmail, EmailAddress, Account } from "./types";
+import type { DraftEmail, EmailAddress, Account, ImapFolder } from "./types";
 
 // Simple Icon Components
 const Icons = {
@@ -30,6 +30,8 @@ const Icons = {
   Paperclip: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>,
   ChevronDown: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>,
   ChevronUp: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" /></svg>,
+  ChevronRight: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>,
+  Folder: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>,
   Command: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 3a3 3 0 00-3 3v12a3 3 0 003 3 3 3 0 003-3 3 3 0 00-3-3H6a3 3 0 00-3 3 3 3 0 003 3 3 3 0 003-3V6a3 3 0 00-3-3 3 3 0 00-3 3 3 3 0 003 3h12a3 3 0 003-3 3 3 0 00-3-3z" /></svg>,
   Image: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>,
   ShieldCheck: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>,
@@ -76,6 +78,124 @@ function getInitials(name: string): string {
   return name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
 }
 
+// Helper to get icon for folder type
+function getFolderIcon(folderType: string, name: string): React.ReactElement {
+  const type = folderType.toLowerCase();
+  const nameLower = name.toLowerCase();
+
+  if (type === 'inbox' || nameLower === 'inbox') return <Icons.Inbox />;
+  if (type === 'sent' || nameLower.includes('sent')) return <Icons.Send />;
+  if (type === 'drafts' || nameLower.includes('draft')) return <Icons.File />;
+  if (type === 'trash' || nameLower.includes('trash') || nameLower.includes('deleted')) return <Icons.Trash />;
+  if (type === 'archive' || nameLower.includes('archive')) return <Icons.Archive />;
+  if (type === 'spam' || type === 'junk' || nameLower.includes('spam') || nameLower.includes('junk')) return <Icons.ShieldCheck />;
+  if (type === 'starred' || nameLower.includes('starred') || nameLower.includes('flagged')) return <Icons.Star />;
+  return <Icons.Mail />; // Default folder icon
+}
+
+// Build folder tree from flat list
+interface FolderTreeNode {
+  folder: ImapFolder;
+  children: FolderTreeNode[];
+}
+
+function buildFolderTree(folders: ImapFolder[]): FolderTreeNode[] {
+  const tree: FolderTreeNode[] = [];
+  const nodeMap = new Map<string, FolderTreeNode>();
+
+  // Sort folders by path to ensure parents come before children
+  const sortedFolders = [...folders].sort((a, b) => a.path.localeCompare(b.path));
+
+  for (const folder of sortedFolders) {
+    const node: FolderTreeNode = { folder, children: [] };
+    nodeMap.set(folder.path, node);
+
+    // Find parent by checking delimiter
+    const delimiter = folder.delimiter || '/';
+    const lastDelimiterIndex = folder.path.lastIndexOf(delimiter);
+
+    if (lastDelimiterIndex > 0) {
+      const parentPath = folder.path.substring(0, lastDelimiterIndex);
+      const parentNode = nodeMap.get(parentPath);
+      if (parentNode) {
+        parentNode.children.push(node);
+        continue;
+      }
+    }
+
+    tree.push(node);
+  }
+
+  return tree;
+}
+
+// Folder Tree Item Component
+function FolderTreeItem({
+  node,
+  level,
+  activeFolder,
+  onFolderChange,
+}: {
+  node: FolderTreeNode;
+  level: number;
+  activeFolder: string;
+  onFolderChange: (path: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(level === 0);
+  const hasChildren = node.children.length > 0;
+  const isActive = activeFolder === node.folder.path;
+
+  return (
+    <div>
+      <button
+        onClick={() => {
+          if (node.folder.is_selectable) {
+            onFolderChange(node.folder.path);
+          }
+          if (hasChildren) {
+            setExpanded(!expanded);
+          }
+        }}
+        className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors text-sm ${
+          isActive
+            ? "bg-owl-accent/20 text-owl-accent"
+            : "text-owl-text-secondary hover:bg-owl-bg hover:text-owl-text"
+        }`}
+        style={{ paddingLeft: `${12 + level * 16}px` }}
+      >
+        {hasChildren && (
+          <span className="w-4 h-4 flex items-center justify-center">
+            {expanded ? <Icons.ChevronDown /> : <Icons.ChevronRight />}
+          </span>
+        )}
+        {!hasChildren && <span className="w-4" />}
+        {getFolderIcon(node.folder.folder_type, node.folder.name)}
+        <span className="flex-1 truncate text-left">{node.folder.name}</span>
+        {node.folder.unread_count > 0 && (
+          <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+            isActive ? "bg-owl-accent text-white" : "bg-owl-bg"
+          }`}>
+            {node.folder.unread_count}
+          </span>
+        )}
+      </button>
+      {hasChildren && expanded && (
+        <div>
+          {node.children.map((child) => (
+            <FolderTreeItem
+              key={child.folder.path}
+              node={child}
+              level={level + 1}
+              activeFolder={activeFolder}
+              onFolderChange={onFolderChange}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Mail Panel Component
 function MailPanel({
   emails,
@@ -92,12 +212,14 @@ function MailPanel({
   accounts,
   selectedAccountId,
   onAccountChange,
+  imapFolders,
+  isLoadingFolders,
 }: {
   emails: Email[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   activeFolder: string;
-  onFolderChange: (id: string) => void;
+  onFolderChange: (path: string) => void;
   onSettingsClick: () => void;
   onComposeClick: () => void;
   onSyncClick: () => void;
@@ -107,37 +229,71 @@ function MailPanel({
   accounts: Account[];
   selectedAccountId: number | null;
   onAccountChange: (id: number) => void;
+  imapFolders: ImapFolder[];
+  isLoadingFolders: boolean;
 }) {
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
+  const [showAllFolders, setShowAllFolders] = useState(false);
   const selectedAccount = accounts.find(a => a.id === selectedAccountId);
-  const folders = [
-    { id: "inbox", name: "Inbox", icon: <Icons.Inbox />, count: emails.filter(e => !e.read && !e.archived && !e.deleted).length },
-    { id: "starred", name: "Starred", icon: <Icons.Star />, count: emails.filter(e => e.starred).length },
-    { id: "sent", name: "Sent", icon: <Icons.Send />, count: 0 },
-    { id: "drafts", name: "Drafts", icon: <Icons.File />, count: 0 },
-    { id: "archive", name: "Archive", icon: <Icons.Archive />, count: emails.filter(e => e.archived).length },
-    { id: "trash", name: "Trash", icon: <Icons.Trash />, count: emails.filter(e => e.deleted).length },
-  ];
 
-  const activeFolderData = folders.find(f => f.id === activeFolder);
+  // Build folder tree
+  const folderTree = useMemo(() => buildFolderTree(imapFolders), [imapFolders]);
+
+  // Get main folders (inbox, sent, drafts, trash) for quick access tabs
+  const mainFolders = useMemo(() => {
+    const main: { path: string; name: string; type: string; icon: React.ReactElement; count: number }[] = [];
+
+    for (const folder of imapFolders) {
+      const type = folder.folder_type.toLowerCase();
+      const nameLower = folder.name.toLowerCase();
+
+      if (type === 'inbox' || nameLower === 'inbox') {
+        main.push({ path: folder.path, name: 'Inbox', type: 'inbox', icon: <Icons.Inbox />, count: folder.unread_count });
+      } else if (type === 'sent' || nameLower.includes('sent')) {
+        main.push({ path: folder.path, name: 'Sent', type: 'sent', icon: <Icons.Send />, count: 0 });
+      } else if (type === 'drafts' || nameLower.includes('draft')) {
+        main.push({ path: folder.path, name: 'Drafts', type: 'drafts', icon: <Icons.File />, count: folder.total_count });
+      } else if (type === 'trash' || nameLower.includes('trash') || nameLower.includes('deleted')) {
+        main.push({ path: folder.path, name: 'Trash', type: 'trash', icon: <Icons.Trash />, count: 0 });
+      }
+    }
+
+    // If no IMAP folders, show default static folders
+    if (main.length === 0) {
+      return [
+        { path: 'INBOX', name: 'Inbox', type: 'inbox', icon: <Icons.Inbox />, count: emails.filter(e => !e.read).length },
+        { path: 'Sent', name: 'Sent', type: 'sent', icon: <Icons.Send />, count: 0 },
+        { path: 'Drafts', name: 'Drafts', type: 'drafts', icon: <Icons.File />, count: 0 },
+        { path: 'Trash', name: 'Trash', type: 'trash', icon: <Icons.Trash />, count: 0 },
+      ];
+    }
+
+    return main;
+  }, [imapFolders, emails]);
+
+  // Static starred folder (filtered locally)
+  const starredFolder = { path: '__starred__', name: 'Starred', type: 'starred', icon: <Icons.Star />, count: emails.filter(e => e.starred).length };
+
+  // Get active folder name for display
+  const activeFolderName = useMemo(() => {
+    if (activeFolder === '__starred__') return 'Starred';
+    const folder = imapFolders.find(f => f.path === activeFolder);
+    return folder?.name || 'Inbox';
+  }, [activeFolder, imapFolders]);
 
   // Filter emails based on folder
   const filteredEmails = useMemo(() => {
     let result = emails;
 
-    // Folder filter
-    switch (activeFolder) {
-      case "starred":
-        result = result.filter(e => e.starred && !e.deleted);
-        break;
-      case "archive":
-        result = result.filter(e => e.archived && !e.deleted);
-        break;
-      case "trash":
-        result = result.filter(e => e.deleted);
-        break;
-      default:
-        result = result.filter(e => !e.archived && !e.deleted);
+    // Starred is a local filter
+    if (activeFolder === '__starred__') {
+      result = result.filter(e => e.starred && !e.deleted);
+    } else {
+      // For other folders, just filter out deleted (unless we're in trash)
+      const isTrash = activeFolder.toLowerCase().includes('trash') || activeFolder.toLowerCase().includes('deleted');
+      if (!isTrash) {
+        result = result.filter(e => !e.deleted);
+      }
     }
 
     // Search filter
@@ -255,12 +411,13 @@ function MailPanel({
       {/* Folder Tabs */}
       <div className="px-2 py-2 border-b border-owl-border">
         <div className="flex items-center gap-1 overflow-x-auto scrollbar-hide">
-          {folders.slice(0, 4).map((folder) => (
+          {/* Main folders (Inbox, Sent, Drafts, Trash) */}
+          {mainFolders.slice(0, 4).map((folder) => (
             <button
-              key={folder.id}
-              onClick={() => onFolderChange(folder.id)}
+              key={folder.path}
+              onClick={() => onFolderChange(folder.path)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap text-sm ${
-                activeFolder === folder.id
+                activeFolder === folder.path
                   ? "bg-owl-accent/20 text-owl-accent"
                   : "text-owl-text-secondary hover:bg-owl-bg hover:text-owl-text"
               }`}
@@ -269,43 +426,88 @@ function MailPanel({
               <span>{folder.name}</span>
               {folder.count > 0 && (
                 <span className={`text-xs px-1.5 py-0.5 rounded-full ml-1 ${
-                  activeFolder === folder.id ? "bg-owl-accent text-white" : "bg-owl-bg"
+                  activeFolder === folder.path ? "bg-owl-accent text-white" : "bg-owl-bg"
                 }`}>
                   {folder.count}
                 </span>
               )}
             </button>
           ))}
-          <div className="relative group">
-            <button className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-owl-text-secondary hover:bg-owl-bg hover:text-owl-text transition-colors text-sm">
-              <span>More</span>
-              <Icons.ChevronDown />
+          {/* Starred folder (local filter) */}
+          <button
+            onClick={() => onFolderChange('__starred__')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap text-sm ${
+              activeFolder === '__starred__'
+                ? "bg-owl-accent/20 text-owl-accent"
+                : "text-owl-text-secondary hover:bg-owl-bg hover:text-owl-text"
+            }`}
+          >
+            {starredFolder.icon}
+            <span>{starredFolder.name}</span>
+            {starredFolder.count > 0 && (
+              <span className={`text-xs px-1.5 py-0.5 rounded-full ml-1 ${
+                activeFolder === '__starred__' ? "bg-owl-accent text-white" : "bg-owl-bg"
+              }`}>
+                {starredFolder.count}
+              </span>
+            )}
+          </button>
+          {/* All Folders dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setShowAllFolders(!showAllFolders)}
+              className={`flex items-center gap-1 px-2 py-1.5 rounded-lg transition-colors text-sm ${
+                showAllFolders ? "bg-owl-bg text-owl-text" : "text-owl-text-secondary hover:bg-owl-bg hover:text-owl-text"
+              }`}
+            >
+              <Icons.Folder />
+              <span>All</span>
+              {showAllFolders ? <Icons.ChevronUp /> : <Icons.ChevronDown />}
             </button>
-            <div className="absolute top-full left-0 mt-1 bg-owl-surface-2 rounded-lg border border-owl-border shadow-owl-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10 min-w-[140px]">
-              {folders.slice(4).map((folder) => (
-                <button
-                  key={folder.id}
-                  onClick={() => onFolderChange(folder.id)}
-                  className={`w-full flex items-center gap-2 px-3 py-2 hover:bg-owl-bg transition-colors first:rounded-t-lg last:rounded-b-lg text-sm ${
-                    activeFolder === folder.id ? "text-owl-accent" : "text-owl-text-secondary"
-                  }`}
-                >
-                  {folder.icon}
-                  <span>{folder.name}</span>
-                  {folder.count > 0 && <span className="text-xs bg-owl-bg px-1.5 rounded-full ml-auto">{folder.count}</span>}
-                </button>
-              ))}
-            </div>
           </div>
         </div>
       </div>
+
+      {/* Expandable All Folders Panel */}
+      {showAllFolders && (
+        <div className="border-b border-owl-border bg-owl-bg/50 max-h-[300px] overflow-y-auto">
+          {isLoadingFolders ? (
+            <div className="flex items-center justify-center py-4 text-owl-text-secondary text-sm">
+              <svg className="w-4 h-4 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              Klasörler yükleniyor...
+            </div>
+          ) : folderTree.length === 0 ? (
+            <div className="text-center py-4 text-owl-text-secondary text-sm">
+              Klasör bulunamadı
+            </div>
+          ) : (
+            <div className="py-2">
+              {folderTree.map((node) => (
+                <FolderTreeItem
+                  key={node.folder.path}
+                  node={node}
+                  level={0}
+                  activeFolder={activeFolder}
+                  onFolderChange={(path) => {
+                    onFolderChange(path);
+                    setShowAllFolders(false);
+                  }}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Email List */}
       <div className="flex-1 overflow-y-auto">
         <div className="p-2">
           <div className="flex items-center justify-between px-3 py-2">
             <div className="text-xs font-medium text-owl-text-secondary uppercase tracking-wider">
-              {activeFolderData?.name || "Inbox"}
+              {activeFolderName}
             </div>
             <span className="text-xs text-owl-text-secondary">{filteredEmails.length} emails</span>
           </div>
@@ -651,22 +853,9 @@ function CommandPalette({ isOpen, onClose, onCommand }: { isOpen: boolean; onClo
 type Page = 'mail' | 'settings';
 type ComposeMode = 'new' | 'reply' | 'replyAll' | 'forward';
 
-// Map frontend folder ID to IMAP folder name
-function getImapFolderName(folderId: string): string {
-  const folderMap: Record<string, string> = {
-    inbox: 'INBOX',
-    sent: 'Sent',        // Common names: Sent, "Sent Items", "Sent Mail"
-    drafts: 'Drafts',
-    trash: 'Trash',      // Common names: Trash, "Deleted Items"
-    archive: 'Archive',
-    starred: 'INBOX',    // Starred is a flag, not a folder - filter locally
-  };
-  return folderMap[folderId] || 'INBOX';
-}
-
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('mail');
-  const [activeFolder, setActiveFolder] = useState("inbox");
+  const [activeFolder, setActiveFolder] = useState("INBOX");
   const [emails, setEmails] = useState<Email[]>([]);  // Start empty - no mock data
   const [selectedEmail, setSelectedEmail] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -678,6 +867,10 @@ function App() {
   const [_isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
 
+  // IMAP Folders state
+  const [imapFolders, setImapFolders] = useState<ImapFolder[]>([]);
+  const [isLoadingFolders, setIsLoadingFolders] = useState(false);
+
   // Notification state
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const knownEmailIds = useRef<Set<string>>(new Set());
@@ -686,11 +879,27 @@ function App() {
   // Email cache per account (to avoid re-fetching when switching)
   const emailCache = useRef<Map<number, Email[]>>(new Map());
 
+  // Fetch folders for an account
+  const fetchFolders = useCallback(async (accountId: number) => {
+    setIsLoadingFolders(true);
+    try {
+      const { listFolders } = await import('./services/mailService');
+      const folders = await listFolders(accountId.toString());
+      console.log('Fetched IMAP folders:', folders);
+      setImapFolders(folders);
+    } catch (err) {
+      console.error('Failed to fetch folders:', err);
+      setImapFolders([]);
+    } finally {
+      setIsLoadingFolders(false);
+    }
+  }, []);
+
   // Load accounts from database on startup
   useEffect(() => {
     const loadAccounts = async () => {
       try {
-        const { listAccounts, connectAccount, listEmails } = await import('./services/mailService');
+        const { listAccounts, connectAccount, listEmails, listFolders } = await import('./services/mailService');
         const dbAccounts = await listAccounts();
         console.log('Loaded accounts from DB:', dbAccounts);
 
@@ -725,6 +934,15 @@ function App() {
           try {
             await connectAccount(firstAccount.id.toString());
             console.log('Connected to account:', firstAccount.email);
+
+            // Fetch IMAP folders
+            try {
+              const folders = await listFolders(firstAccount.id.toString());
+              console.log('Fetched IMAP folders:', folders);
+              setImapFolders(folders);
+            } catch (folderErr) {
+              console.error('Failed to fetch folders:', folderErr);
+            }
 
             // Load emails (page is 0-indexed)
             try {
@@ -885,10 +1103,10 @@ function App() {
       // Reconnect to refresh connection
       await connectAccount(account.id.toString());
 
-      // Fetch emails from current folder
-      const imapFolder = getImapFolderName(activeFolder);
-      const result = await listEmails(account.id.toString(), 0, 50, imapFolder);
-      console.log('Sync result for folder', imapFolder, ':', result);
+      // Fetch emails from current folder (activeFolder is now the IMAP path)
+      const folderToSync = activeFolder === '__starred__' ? 'INBOX' : activeFolder;
+      const result = await listEmails(account.id.toString(), 0, 50, folderToSync);
+      console.log('Sync result for folder', folderToSync, ':', result);
 
       if (result && result.emails) {
         let newEmailCount = 0;
@@ -948,6 +1166,7 @@ function App() {
     setSelectedAccountId(accountId);
     setSelectedEmail(null);
     setFetchedEmailIds(new Set());
+    setActiveFolder('INBOX'); // Reset to inbox when switching accounts
 
     // Check if we have cached emails for this account
     const cachedEmails = emailCache.current.get(accountId);
@@ -957,7 +1176,9 @@ function App() {
       // Update known email IDs from cache
       knownEmailIds.current = new Set(cachedEmails.map(e => e.id));
       isInitialLoad.current = false;
-      return; // No need to fetch from server
+      // Still fetch folders for the new account
+      fetchFolders(accountId);
+      return; // No need to fetch emails from server
     }
 
     // No cache - fetch from server
@@ -967,10 +1188,19 @@ function App() {
 
     try {
       setIsSyncing(true);
-      const { connectAccount, listEmails } = await import('./services/mailService');
+      const { connectAccount, listEmails, listFolders } = await import('./services/mailService');
 
       await connectAccount(accountId.toString());
       console.log('Connected to account:', accountId);
+
+      // Fetch folders
+      try {
+        const folders = await listFolders(accountId.toString());
+        console.log('Fetched IMAP folders for account:', accountId, folders);
+        setImapFolders(folders);
+      } catch (folderErr) {
+        console.error('Failed to fetch folders:', folderErr);
+      }
 
       const result = await listEmails(accountId.toString(), 0, 50, 'INBOX');
       console.log('Account switch - listEmails result:', result);
@@ -1006,29 +1236,28 @@ function App() {
     } finally {
       setIsSyncing(false);
     }
-  }, [selectedAccountId]);
+  }, [selectedAccountId, fetchFolders]);
 
   // Handle folder change - fetch emails from the selected IMAP folder
-  const handleFolderChange = useCallback(async (folderId: string) => {
-    setActiveFolder(folderId);
+  const handleFolderChange = useCallback(async (folderPath: string) => {
+    setActiveFolder(folderPath);
     setSelectedEmail(null);
     setFetchedEmailIds(new Set());
 
     // Starred is filtered locally, not a real folder
-    if (folderId === 'starred') {
-      return; // Just filter existing emails
+    if (folderPath === '__starred__') {
+      return; // Just filter existing emails from cache/current list
     }
 
     if (!selectedAccountId || accounts.length === 0) return;
 
-    const imapFolder = getImapFolderName(folderId);
-    console.log('Switching to folder:', folderId, '-> IMAP:', imapFolder);
+    console.log('Switching to folder:', folderPath);
 
     try {
       setIsSyncing(true);
       const { listEmails } = await import('./services/mailService');
 
-      const result = await listEmails(selectedAccountId.toString(), 0, 50, imapFolder);
+      const result = await listEmails(selectedAccountId.toString(), 0, 50, folderPath);
       console.log('Folder switch - listEmails result:', result);
 
       if (result && result.emails) {
@@ -1051,7 +1280,7 @@ function App() {
           };
         });
         setEmails(loadedEmails);
-        console.log('Loaded emails for folder:', imapFolder, 'count:', loadedEmails.length);
+        console.log('Loaded emails for folder:', folderPath, 'count:', loadedEmails.length);
       } else {
         setEmails([]);
       }
@@ -1404,6 +1633,8 @@ function App() {
         accounts={accounts}
         selectedAccountId={selectedAccountId}
         onAccountChange={handleAccountChange}
+        imapFolders={imapFolders}
+        isLoadingFolders={isLoadingFolders}
       />
       <EmailView
         email={currentEmail}
