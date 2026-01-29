@@ -427,16 +427,46 @@ async fn email_get(
             .and_then(|f| f.get(&account_id).cloned())
     }).unwrap_or_else(|| "INBOX".to_string());
 
-    // Use async IMAP client
-    let mut async_clients = state.async_imap_clients.lock().await;
-    let client = async_clients
-        .get_mut(&account_id)
-        .ok_or_else(|| "Account not connected".to_string())?;
+    // Get account details from database for fresh connection
+    let account_id_num: i64 = account_id.parse().map_err(|_| "Invalid account ID")?;
+    let account = state.db.get_account(account_id_num)
+        .map_err(|e| format!("Failed to get account: {}", e))?;
+    let password = state.db.get_account_password(account_id_num)
+        .map_err(|e| format!("Failed to get password: {}", e))?
+        .ok_or_else(|| "No password found for account".to_string())?;
 
-    let email = client
-        .fetch_email(&folder_path, uid)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Parse security type
+    let security = match account.imap_security.to_uppercase().as_str() {
+        "SSL" => mail::SecurityType::SSL,
+        "STARTTLS" => mail::SecurityType::STARTTLS,
+        _ => mail::SecurityType::SSL,
+    };
+
+    // Create ImapConfig for fresh connection
+    let config = mail::ImapConfig {
+        host: account.imap_host.clone(),
+        port: account.imap_port as u16,
+        security,
+        username: account.email.clone(),
+        password,
+    };
+
+    // Create a fresh connection for this request to avoid session conflicts
+    log::info!("email_get: creating fresh IMAP connection for uid={}", uid);
+    let mut fresh_client = mail::AsyncImapClient::new(config);
+    fresh_client.connect().await.map_err(|e| format!("Failed to connect: {}", e))?;
+
+    // Fetch with timeout (15 seconds)
+    let fetch_result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        fresh_client.fetch_email(&folder_path, uid)
+    ).await;
+
+    let email = match fetch_result {
+        Ok(Ok(email)) => email,
+        Ok(Err(e)) => return Err(format!("Fetch error: {}", e)),
+        Err(_) => return Err("Fetch timeout - server did not respond in time".to_string()),
+    };
 
     log::info!("email_get: returning email with subject={}", email.subject);
     Ok(email)
