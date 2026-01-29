@@ -282,14 +282,25 @@ export function AddAccountModal({
 
                 {/* Manual Config Toggle */}
                 <div className="flex items-center">
-                  <input
-                    type="checkbox"
-                    id="manualConfig"
-                    checked={showManual}
-                    onChange={(e) => setShowManual(e.target.checked)}
-                    className="w-4 h-4 rounded border-owl-border bg-owl-surface-2 text-owl-accent focus:ring-owl-accent"
-                  />
-                  <label htmlFor="manualConfig" className="ml-2 text-sm text-owl-text-secondary">
+                  <button
+                    type="button"
+                    onClick={() => setShowManual(!showManual)}
+                    className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${
+                      showManual
+                        ? 'bg-owl-accent border-owl-accent'
+                        : 'bg-owl-surface-2 border-owl-border hover:border-owl-text-secondary'
+                    }`}
+                  >
+                    {showManual && (
+                      <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </button>
+                  <label
+                    onClick={() => setShowManual(!showManual)}
+                    className="ml-2 text-sm text-owl-text-secondary cursor-pointer"
+                  >
                     Sunucu ayarlarını manuel gir
                   </label>
                 </div>

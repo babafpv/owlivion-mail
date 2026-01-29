@@ -148,8 +148,8 @@ function Toggle({
       } ${enabled ? 'bg-owl-accent' : 'bg-owl-surface-2 border border-owl-border'}`}
     >
       <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-          enabled ? 'translate-x-6' : 'translate-x-1'
+        className={`inline-block h-4 w-4 transform rounded-full transition-transform ${
+          enabled ? 'translate-x-6 bg-white' : 'translate-x-1 bg-owl-text-secondary'
         }`}
       />
     </button>
