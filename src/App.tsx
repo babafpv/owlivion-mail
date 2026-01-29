@@ -1127,8 +1127,21 @@ function App() {
 
   const handleSend = async (draft: DraftEmail) => {
     console.log("Sending email:", draft);
-    // TODO: Implement actual send via SMTP
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      const { sendEmail } = await import('./services/mailService');
+      // Use the selected account ID
+      const emailToSend = {
+        ...draft,
+        accountId: selectedAccountId || draft.accountId,
+      };
+      await sendEmail(emailToSend);
+      console.log("Email sent successfully");
+      // Show notification
+      playNotificationSound();
+    } catch (err) {
+      console.error("Failed to send email:", err);
+      throw err; // Re-throw so Compose component can show error
+    }
   };
 
   const handleSaveDraft = async (draft: DraftEmail) => {
