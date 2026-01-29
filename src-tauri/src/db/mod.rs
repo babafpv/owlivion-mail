@@ -75,6 +75,11 @@ impl Database {
     pub fn add_account(&self, account: &NewAccount) -> DbResult<i64> {
         let conn = self.conn.lock().unwrap();
 
+        // If this account is set as default, first remove default from all other accounts
+        if account.is_default {
+            conn.execute("UPDATE accounts SET is_default = 0 WHERE is_default = 1", [])?;
+        }
+
         conn.execute(
             r#"
             INSERT INTO accounts (

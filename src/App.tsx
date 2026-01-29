@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import "./App.css";
 import owlivionIcon from "./assets/owlivion-logo.svg";
 import { Settings } from "./pages/Settings";
@@ -8,6 +8,7 @@ import { ShortcutsHelp } from "./components/ShortcutsHelp";
 import { Welcome } from "./components/Welcome";
 import { AddAccountModal } from "./components/settings/AddAccountModal";
 import { summarizeEmail } from "./services/geminiService";
+import { requestNotificationPermission, showNewEmailNotification, playNotificationSound } from "./services/notificationService";
 import type { DraftEmail, EmailAddress, Account } from "./types";
 
 // Simple Icon Components
@@ -88,6 +89,9 @@ function MailPanel({
   isSyncing,
   searchQuery,
   onSearchChange,
+  accounts,
+  selectedAccountId,
+  onAccountChange,
 }: {
   emails: Email[];
   selectedId: string | null;
@@ -100,7 +104,12 @@ function MailPanel({
   isSyncing: boolean;
   searchQuery: string;
   onSearchChange: (query: string) => void;
+  accounts: Account[];
+  selectedAccountId: number | null;
+  onAccountChange: (id: number) => void;
 }) {
+  const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
+  const selectedAccount = accounts.find(a => a.id === selectedAccountId);
   const folders = [
     { id: "inbox", name: "Inbox", icon: <Icons.Inbox />, count: emails.filter(e => !e.read && !e.archived && !e.deleted).length },
     { id: "starred", name: "Starred", icon: <Icons.Star />, count: emails.filter(e => e.starred).length },
@@ -186,6 +195,61 @@ function MailPanel({
           />
           <kbd className="text-xs text-owl-text-secondary">/</kbd>
         </div>
+
+        {/* Account Selector */}
+        {accounts.length > 1 && (
+          <div className="relative mt-3">
+            <button
+              onClick={() => setAccountDropdownOpen(!accountDropdownOpen)}
+              className="w-full flex items-center justify-between px-3 py-2 bg-owl-bg rounded-lg text-sm text-owl-text hover:bg-owl-surface-2 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full bg-owl-accent/20 flex items-center justify-center text-xs text-owl-accent font-medium">
+                  {selectedAccount?.email?.charAt(0).toUpperCase() || '?'}
+                </div>
+                <span className="truncate">{selectedAccount?.email || 'Hesap Seç'}</span>
+              </div>
+              <svg className={`w-4 h-4 text-owl-text-secondary transition-transform ${accountDropdownOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {accountDropdownOpen && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-owl-surface border border-owl-border rounded-lg shadow-lg z-50 overflow-hidden">
+                {accounts.map(account => (
+                  <button
+                    key={account.id}
+                    onClick={() => {
+                      onAccountChange(account.id);
+                      setAccountDropdownOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors ${
+                      account.id === selectedAccountId
+                        ? 'bg-owl-accent/10 text-owl-accent'
+                        : 'text-owl-text hover:bg-owl-bg'
+                    }`}
+                  >
+                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium ${
+                      account.id === selectedAccountId
+                        ? 'bg-owl-accent/20 text-owl-accent'
+                        : 'bg-owl-surface-2 text-owl-text-secondary'
+                    }`}>
+                      {account.email.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="flex-1 truncate">
+                      <div className="font-medium">{account.displayName || account.email}</div>
+                      <div className="text-xs text-owl-text-secondary">{account.email}</div>
+                    </div>
+                    {account.id === selectedAccountId && (
+                      <svg className="w-4 h-4 text-owl-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Folder Tabs */}
@@ -596,9 +660,18 @@ function App() {
 
   // Account state
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [addAccountModalOpen, setAddAccountModalOpen] = useState(false);
   const [_isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
+
+  // Notification state
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const knownEmailIds = useRef<Set<string>>(new Set());
+  const isInitialLoad = useRef(true);
+
+  // Email cache per account (to avoid re-fetching when switching)
+  const emailCache = useRef<Map<number, Email[]>>(new Map());
 
   // Load accounts from database on startup
   useEffect(() => {
@@ -630,8 +703,12 @@ function App() {
 
           setAccounts(frontendAccounts);
 
+          // Set selected account to the default one or first one
+          const defaultAccount = frontendAccounts.find(a => a.isDefault) || frontendAccounts[0];
+          setSelectedAccountId(defaultAccount.id);
+
           // Connect to first account and load emails
-          const firstAccount = frontendAccounts[0];
+          const firstAccount = defaultAccount;
           try {
             await connectAccount(firstAccount.id.toString());
             console.log('Connected to account:', firstAccount.email);
@@ -648,9 +725,12 @@ function App() {
                 console.log('First email:', JSON.stringify(result.emails[0], null, 2));
 
                 const loadedEmails: Email[] = result.emails.map((e: any, idx: number) => {
+                  const emailId = e.uid?.toString() || e.id?.toString() || idx.toString();
+                  // Track known emails on initial load
+                  knownEmailIds.current.add(emailId);
                   console.log(`Mapping email ${idx}: uid=${e.uid}, subject=${e.subject}`);
                   return {
-                    id: e.uid?.toString() || e.id?.toString() || idx.toString(),
+                    id: emailId,
                     from: { name: e.fromName || e.from || '', email: e.from || '' },
                     to: [{ name: '', email: '' }],
                     subject: e.subject || '(Konu yok)',
@@ -666,8 +746,11 @@ function App() {
                   };
                 });
                 console.log('Mapped emails count:', loadedEmails.length);
+                // Save to cache
+                emailCache.current.set(firstAccount.id, loadedEmails);
                 setEmails(loadedEmails);
-                console.log('State updated with emails');
+                isInitialLoad.current = false; // Mark initial load as complete
+                console.log('State updated with emails, cached for account:', firstAccount.id);
               } else {
                 console.log('No emails in result or result is empty');
                 console.log('result:', result);
@@ -689,13 +772,102 @@ function App() {
     loadAccounts();
   }, []);
 
+  // Request notification permission on startup
+  useEffect(() => {
+    const initNotifications = async () => {
+      try {
+        const granted = await requestNotificationPermission();
+        setNotificationsEnabled(granted);
+        console.log('Notification permission:', granted ? 'granted' : 'denied');
+      } catch (err) {
+        console.error('Failed to request notification permission:', err);
+      }
+    };
+    initNotifications();
+  }, []);
+
+  // Check for new emails and show notifications
+  const checkForNewEmails = useCallback(async () => {
+    if (!selectedAccountId || accounts.length === 0) return;
+
+    try {
+      const { listEmails } = await import('./services/mailService');
+      const result = await listEmails(selectedAccountId.toString(), 0, 50, 'INBOX');
+
+      if (result && result.emails) {
+        const newEmails: Email[] = [];
+
+        result.emails.forEach((e: any) => {
+          const emailId = e.uid?.toString() || e.id?.toString();
+          if (emailId && !knownEmailIds.current.has(emailId)) {
+            // This is a new email
+            if (!isInitialLoad.current && notificationsEnabled) {
+              const senderName = e.fromName || e.from || 'Bilinmeyen';
+              const subject = e.subject || '(Konu yok)';
+              showNewEmailNotification(senderName, subject, e.preview);
+            }
+            knownEmailIds.current.add(emailId);
+            newEmails.push({
+              id: emailId,
+              from: { name: e.fromName || e.from || '', email: e.from || '' },
+              to: [{ name: '', email: '' }],
+              subject: e.subject || '(Konu yok)',
+              preview: e.preview || '',
+              body: e.bodyText || '',
+              bodyHtml: e.bodyHtml,
+              bodyText: e.bodyText,
+              date: new Date(e.date || Date.now()),
+              read: e.isRead ?? false,
+              starred: e.isStarred ?? false,
+              hasAttachments: e.hasAttachments ?? false,
+              hasImages: false,
+            });
+          }
+        });
+
+        if (newEmails.length > 0 && !isInitialLoad.current) {
+          console.log('Found', newEmails.length, 'new emails');
+          setEmails(prev => {
+            // Add new emails at the beginning, avoiding duplicates
+            const existingIds = new Set(prev.map(e => e.id));
+            const uniqueNewEmails = newEmails.filter(e => !existingIds.has(e.id));
+            const updatedEmails = [...uniqueNewEmails, ...prev];
+            // Update cache
+            if (selectedAccountId) {
+              emailCache.current.set(selectedAccountId, updatedEmails);
+            }
+            return updatedEmails;
+          });
+        }
+
+        isInitialLoad.current = false;
+      }
+    } catch (err) {
+      console.error('Error checking for new emails:', err);
+    }
+  }, [selectedAccountId, accounts, notificationsEnabled]);
+
+  // Poll for new emails every 60 seconds
+  useEffect(() => {
+    if (!selectedAccountId || accounts.length === 0) return;
+
+    // Initialize known email IDs from current emails
+    emails.forEach(e => knownEmailIds.current.add(e.id));
+
+    const pollInterval = setInterval(() => {
+      checkForNewEmails();
+    }, 60000); // Check every 60 seconds
+
+    return () => clearInterval(pollInterval);
+  }, [selectedAccountId, accounts, checkForNewEmails, emails]);
+
   // Sync emails handler
   const handleSync = useCallback(async () => {
-    if (isSyncing || accounts.length === 0) return;
+    if (isSyncing || accounts.length === 0 || !selectedAccountId) return;
     setIsSyncing(true);
     try {
       const { connectAccount, listEmails } = await import('./services/mailService');
-      const account = accounts[0];
+      const account = accounts.find(a => a.id === selectedAccountId) || accounts[0];
 
       // Reconnect to refresh connection
       await connectAccount(account.id.toString());
@@ -705,30 +877,122 @@ function App() {
       console.log('Sync result:', result);
 
       if (result && result.emails) {
-        const loadedEmails: Email[] = result.emails.map((e: any) => ({
-          id: e.uid?.toString() || e.id?.toString(),
-          from: { name: e.fromName || e.from || '', email: e.from || '' },
-          to: [{ name: '', email: '' }],
-          subject: e.subject || '(Konu yok)',
-          preview: e.preview || '',
-          body: e.bodyText || '',
-          bodyHtml: e.bodyHtml,
-          bodyText: e.bodyText,
-          date: new Date(e.date || Date.now()),
-          read: e.isRead ?? false,
-          starred: e.isStarred ?? false,
-          hasAttachments: e.hasAttachments ?? false,
-          hasImages: false,
-        }));
+        let newEmailCount = 0;
+        const loadedEmails: Email[] = result.emails.map((e: any) => {
+          const emailId = e.uid?.toString() || e.id?.toString();
+
+          // Check if this is a new email
+          if (emailId && !knownEmailIds.current.has(emailId)) {
+            newEmailCount++;
+            knownEmailIds.current.add(emailId);
+
+            // Show notification for the first new email (to avoid spam)
+            if (newEmailCount === 1 && notificationsEnabled) {
+              const senderName = e.fromName || e.from || 'Bilinmeyen';
+              const subject = e.subject || '(Konu yok)';
+              showNewEmailNotification(senderName, subject, e.preview);
+            } else if (newEmailCount > 1 && notificationsEnabled) {
+              // Play sound for additional new emails
+              playNotificationSound();
+            }
+          }
+
+          return {
+            id: emailId,
+            from: { name: e.fromName || e.from || '', email: e.from || '' },
+            to: [{ name: '', email: '' }],
+            subject: e.subject || '(Konu yok)',
+            preview: e.preview || '',
+            body: e.bodyText || '',
+            bodyHtml: e.bodyHtml,
+            bodyText: e.bodyText,
+            date: new Date(e.date || Date.now()),
+            read: e.isRead ?? false,
+            starred: e.isStarred ?? false,
+            hasAttachments: e.hasAttachments ?? false,
+            hasImages: false,
+          };
+        });
+        // Update cache
+        if (selectedAccountId) {
+          emailCache.current.set(selectedAccountId, loadedEmails);
+        }
         setEmails(loadedEmails);
-        console.log('Synced emails:', loadedEmails.length);
+        console.log('Synced emails:', loadedEmails.length, 'New:', newEmailCount);
       }
     } catch (err) {
       console.error('Sync failed:', err);
     } finally {
       setIsSyncing(false);
     }
-  }, [accounts, isSyncing]);
+  }, [accounts, isSyncing, selectedAccountId, notificationsEnabled]);
+
+  // Handle account change
+  const handleAccountChange = useCallback(async (accountId: number) => {
+    if (accountId === selectedAccountId) return;
+
+    setSelectedAccountId(accountId);
+    setSelectedEmail(null);
+    setFetchedEmailIds(new Set());
+
+    // Check if we have cached emails for this account
+    const cachedEmails = emailCache.current.get(accountId);
+    if (cachedEmails && cachedEmails.length > 0) {
+      console.log('Using cached emails for account:', accountId, 'count:', cachedEmails.length);
+      setEmails(cachedEmails);
+      // Update known email IDs from cache
+      knownEmailIds.current = new Set(cachedEmails.map(e => e.id));
+      isInitialLoad.current = false;
+      return; // No need to fetch from server
+    }
+
+    // No cache - fetch from server
+    setEmails([]); // Clear current emails
+    knownEmailIds.current = new Set(); // Reset known emails for new account
+    isInitialLoad.current = true; // Mark as initial load for new account
+
+    try {
+      setIsSyncing(true);
+      const { connectAccount, listEmails } = await import('./services/mailService');
+
+      await connectAccount(accountId.toString());
+      console.log('Connected to account:', accountId);
+
+      const result = await listEmails(accountId.toString(), 0, 50, 'INBOX');
+      console.log('Account switch - listEmails result:', result);
+
+      if (result && result.emails) {
+        const loadedEmails: Email[] = result.emails.map((e: any) => {
+          const emailId = e.uid?.toString() || e.id?.toString();
+          knownEmailIds.current.add(emailId);
+          return {
+            id: emailId,
+            from: { name: e.fromName || e.from || '', email: e.from || '' },
+            to: [{ name: '', email: '' }],
+            subject: e.subject || '(Konu yok)',
+            preview: e.preview || '',
+            body: e.bodyText || '',
+            bodyHtml: e.bodyHtml,
+            bodyText: e.bodyText,
+            date: new Date(e.date || Date.now()),
+            read: e.isRead ?? false,
+            starred: e.isStarred ?? false,
+            hasAttachments: e.hasAttachments ?? false,
+            hasImages: false,
+          };
+        });
+        // Save to cache
+        emailCache.current.set(accountId, loadedEmails);
+        setEmails(loadedEmails);
+        isInitialLoad.current = false;
+        console.log('Loaded and cached emails for account:', accountId, 'count:', loadedEmails.length);
+      }
+    } catch (err) {
+      console.error('Failed to switch account:', err);
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [selectedAccountId]);
 
   // Modal states
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -753,7 +1017,7 @@ function App() {
 
   // Fetch full email content when selected
   useEffect(() => {
-    if (!selectedEmail || accounts.length === 0) return;
+    if (!selectedEmail || accounts.length === 0 || !selectedAccountId) return;
     if (fetchedEmailIds.has(selectedEmail)) return; // Already fetched
 
     const fetchEmailContent = async () => {
@@ -763,7 +1027,7 @@ function App() {
         if (isNaN(uid)) return;
 
         console.log('Fetching full email content for UID:', uid);
-        const fullEmail = await getEmail(accounts[0].id.toString(), uid, 'INBOX');
+        const fullEmail = await getEmail(selectedAccountId.toString(), uid, 'INBOX');
         console.log('Full email fetched:', fullEmail);
 
         // Mark as fetched
@@ -791,7 +1055,7 @@ function App() {
     };
 
     fetchEmailContent();
-  }, [selectedEmail, accounts, fetchedEmailIds]);
+  }, [selectedEmail, accounts, fetchedEmailIds, selectedAccountId]);
 
   // Get visible emails for navigation
   const visibleEmails = useMemo(() => {
@@ -1055,6 +1319,9 @@ function App() {
         isSyncing={isSyncing}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
+        accounts={accounts}
+        selectedAccountId={selectedAccountId}
+        onAccountChange={handleAccountChange}
       />
       <EmailView
         email={currentEmail}
