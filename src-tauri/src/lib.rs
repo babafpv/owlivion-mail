@@ -364,15 +364,17 @@ async fn folder_list(
     state: State<'_, AppState>,
     account_id: String,
 ) -> Result<Vec<mail::Folder>, String> {
-    let mut clients = state.imap_clients.lock().map_err(|e| e.to_string())?;
+    log::info!("Listing folders for account: {}", account_id);
 
-    let client = clients
+    let mut async_clients = state.async_imap_clients.lock().await;
+
+    let client = async_clients
         .get_mut(&account_id)
         .ok_or_else(|| "Account not connected".to_string())?;
 
-    // Clone client to use in blocking task (we need mutable access)
-    let folders = client.list_folders().map_err(|e| e.to_string())?;
+    let folders = client.list_folders().await.map_err(|e| e.to_string())?;
 
+    log::info!("Found {} folders for account {}", folders.len(), account_id);
     Ok(folders)
 }
 
