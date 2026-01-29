@@ -417,6 +417,8 @@ async fn email_get(
     uid: u32,
     folder: Option<String>,
 ) -> Result<mail::ParsedEmail, String> {
+    log::info!("email_get: account={}, uid={}, folder={:?}", account_id, uid, folder);
+
     let folder_path = folder.or_else(|| {
         state
             .current_folder
@@ -425,16 +427,18 @@ async fn email_get(
             .and_then(|f| f.get(&account_id).cloned())
     }).unwrap_or_else(|| "INBOX".to_string());
 
-    let mut clients = state.imap_clients.lock().map_err(|e| e.to_string())?;
-
-    let client = clients
+    // Use async IMAP client
+    let mut async_clients = state.async_imap_clients.lock().await;
+    let client = async_clients
         .get_mut(&account_id)
         .ok_or_else(|| "Account not connected".to_string())?;
 
     let email = client
         .fetch_email(&folder_path, uid)
+        .await
         .map_err(|e| e.to_string())?;
 
+    log::info!("email_get: returning email with subject={}", email.subject);
     Ok(email)
 }
 

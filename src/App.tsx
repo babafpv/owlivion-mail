@@ -599,6 +599,7 @@ function App() {
   const [addAccountModalOpen, setAddAccountModalOpen] = useState(false);
   const [_isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Load accounts from database on startup
   useEffect(() => {
@@ -637,27 +638,44 @@ function App() {
             console.log('Connected to account:', firstAccount.email);
 
             // Load emails (page is 0-indexed)
-            const result = await listEmails(firstAccount.id.toString(), 0, 50, 'INBOX');
-            console.log('listEmails result:', result);
-            if (result && result.emails) {
-              console.log('Raw emails from backend:', result.emails);
-              const loadedEmails: Email[] = result.emails.map((e: any) => ({
-                id: e.uid?.toString() || e.id?.toString(),
-                from: { name: e.fromName || e.from || '', email: e.from || '' },
-                to: [{ name: '', email: '' }],
-                subject: e.subject || '(Konu yok)',
-                preview: e.preview || '',
-                body: e.bodyText || '',
-                bodyHtml: e.bodyHtml,
-                bodyText: e.bodyText,
-                date: new Date(e.date || Date.now()),
-                read: e.isRead ?? false,
-                starred: e.isStarred ?? false,
-                hasAttachments: e.hasAttachments ?? false,
-                hasImages: false,
-              }));
-              setEmails(loadedEmails);
-              console.log('Mapped emails:', loadedEmails.length, loadedEmails);
+            try {
+              const result = await listEmails(firstAccount.id.toString(), 0, 50, 'INBOX');
+              console.log('listEmails result:', result);
+              console.log('Result keys:', result ? Object.keys(result) : 'null');
+
+              if (result && result.emails && result.emails.length > 0) {
+                console.log('Raw emails from backend, count:', result.emails.length);
+                console.log('First email keys:', Object.keys(result.emails[0]));
+                console.log('First email:', JSON.stringify(result.emails[0], null, 2));
+
+                const loadedEmails: Email[] = result.emails.map((e: any, idx: number) => {
+                  console.log(`Mapping email ${idx}: uid=${e.uid}, subject=${e.subject}`);
+                  return {
+                    id: e.uid?.toString() || e.id?.toString() || idx.toString(),
+                    from: { name: e.fromName || e.from || '', email: e.from || '' },
+                    to: [{ name: '', email: '' }],
+                    subject: e.subject || '(Konu yok)',
+                    preview: e.preview || '',
+                    body: e.bodyText || e.preview || '',
+                    bodyHtml: e.bodyHtml,
+                    bodyText: e.bodyText,
+                    date: new Date(e.date || Date.now()),
+                    read: e.isRead ?? false,
+                    starred: e.isStarred ?? false,
+                    hasAttachments: e.hasAttachments ?? false,
+                    hasImages: false,
+                  };
+                });
+                console.log('Mapped emails count:', loadedEmails.length);
+                setEmails(loadedEmails);
+                console.log('State updated with emails');
+              } else {
+                console.log('No emails in result or result is empty');
+                console.log('result:', result);
+              }
+            } catch (emailErr: any) {
+              console.error('Error loading emails:', emailErr);
+              setLoadError(`Email load error: ${emailErr?.message || emailErr}`);
             }
           } catch (connectErr) {
             console.error('Failed to connect/load emails:', connectErr);
@@ -726,6 +744,7 @@ function App() {
   const [loadedImageEmails, setLoadedImageEmails] = useState<string[]>([]);
   const [summaries, setSummaries] = useState<Record<string, string>>({});
   const [summarizingId, setSummarizingId] = useState<string | null>(null);
+  const [fetchedEmailIds, setFetchedEmailIds] = useState<Set<string>>(new Set());
 
   // Check if user has any accounts configured
   const hasAccounts = accounts.length > 0;
@@ -733,6 +752,44 @@ function App() {
   const currentEmail = emails.find((e) => e.id === selectedEmail) || null;
   const isTrustedSender = currentEmail ? trustedSenders.includes(currentEmail.from.email) : false;
   const showImages = selectedEmail ? loadedImageEmails.includes(selectedEmail) : false;
+
+  // Fetch full email content when selected
+  useEffect(() => {
+    if (!selectedEmail || accounts.length === 0) return;
+    if (fetchedEmailIds.has(selectedEmail)) return; // Already fetched
+
+    const fetchEmailContent = async () => {
+      try {
+        const { getEmail } = await import('./services/mailService');
+        const uid = parseInt(selectedEmail);
+        if (isNaN(uid)) return;
+
+        console.log('Fetching full email content for UID:', uid);
+        const fullEmail = await getEmail(accounts[0].id.toString(), uid, 'INBOX');
+        console.log('Full email fetched:', fullEmail);
+
+        // Mark as fetched
+        setFetchedEmailIds(prev => new Set([...prev, selectedEmail]));
+
+        // Update the email in state with full content
+        setEmails(prev => prev.map(e => {
+          if (e.id === selectedEmail) {
+            return {
+              ...e,
+              body: fullEmail.bodyText || fullEmail.bodyHtml || e.body,
+              bodyText: fullEmail.bodyText,
+              bodyHtml: fullEmail.bodyHtml,
+            };
+          }
+          return e;
+        }));
+      } catch (err) {
+        console.error('Failed to fetch email content:', err);
+      }
+    };
+
+    fetchEmailContent();
+  }, [selectedEmail, accounts, fetchedEmailIds]);
 
   // Get visible emails for navigation
   const visibleEmails = useMemo(() => {
@@ -1089,6 +1146,36 @@ function App() {
         <span>Press</span>
         <kbd className="px-1.5 py-0.5 bg-owl-bg rounded">?</kbd>
         <span>for shortcuts</span>
+      </div>
+
+      {/* Debug info */}
+      <div className="fixed bottom-4 left-4 text-xs bg-owl-surface px-3 py-2 rounded-lg border border-owl-border flex flex-col gap-1">
+        <div className="flex gap-2 items-center flex-wrap">
+          <span className={emails.length > 0 ? 'text-green-500' : 'text-red-500'}>
+            {emails.length} emails, selected: {selectedEmail || 'none'}
+          </span>
+          <button
+            onClick={async () => {
+              if (!selectedEmail) {
+                alert('Önce bir email seç!');
+                return;
+              }
+              try {
+                const { getEmail } = await import('./services/mailService');
+                const uid = parseInt(selectedEmail);
+                alert(`Fetching UID: ${uid}...`);
+                const result = await getEmail('1', uid, 'INBOX');
+                alert(`Body text: ${result?.bodyText?.substring(0, 200) || 'none'}\nBody HTML: ${result?.bodyHtml?.substring(0, 200) || 'none'}`);
+              } catch (e: any) {
+                alert(`Error: ${e.message}`);
+              }
+            }}
+            className="px-2 py-1 bg-blue-500 text-white rounded text-xs"
+          >
+            Load Body
+          </button>
+        </div>
+        {loadError && <div className="text-red-500">{loadError}</div>}
       </div>
     </div>
   );

@@ -4,7 +4,7 @@
 
 use crate::mail::{
     config::{ImapConfig, SecurityType},
-    EmailSummary, FetchResult, Folder, FolderType, MailError, MailResult,
+    EmailSummary, FetchResult, Folder, FolderType, MailError, MailResult, ParsedEmail, EmailAttachment,
 };
 use async_imap::Session;
 use futures::StreamExt;
@@ -328,4 +328,159 @@ impl AsyncImapClient {
             has_more,
         })
     }
+
+    /// Fetch a single email with full content
+    pub async fn fetch_email(&mut self, folder: &str, uid: u32) -> MailResult<ParsedEmail> {
+        log::info!("fetch_email: folder={}, uid={}", folder, uid);
+
+        let session = self.session.as_mut().ok_or(MailError::NotConnected)?;
+
+        // Select folder
+        log::info!("fetch_email: selecting folder...");
+        session
+            .select(folder)
+            .await
+            .map_err(|e| {
+                log::error!("fetch_email: failed to select folder: {}", e);
+                MailError::Imap(e.to_string())
+            })?;
+        log::info!("fetch_email: folder selected");
+
+        // Fetch the email with body - use simpler fetch command
+        let uid_str = uid.to_string();
+        log::info!("fetch_email: fetching UID {}...", uid);
+        let mut messages_stream = session
+            .uid_fetch(&uid_str, "(UID FLAGS ENVELOPE RFC822)")
+            .await
+            .map_err(|e| {
+                log::error!("fetch_email: uid_fetch failed: {}", e);
+                MailError::Imap(e.to_string())
+            })?;
+        log::info!("fetch_email: got message stream");
+
+        log::info!("fetch_email: waiting for message from stream...");
+        if let Some(result) = messages_stream.next().await {
+            log::info!("fetch_email: got message from stream");
+            let message = result.map_err(|e| {
+                log::error!("fetch_email: message parse error: {}", e);
+                MailError::Imap(e.to_string())
+            })?;
+
+            let flags = message.flags();
+            let flags_vec: Vec<_> = flags.collect();
+            let is_read = flags_vec.iter().any(|f| matches!(f, async_imap::types::Flag::Seen));
+            let is_starred = flags_vec.iter().any(|f| matches!(f, async_imap::types::Flag::Flagged));
+
+            // Get envelope for headers
+            let envelope = message.envelope();
+
+            let (from, from_name) = envelope
+                .and_then(|e| e.from.as_ref())
+                .and_then(|addrs| addrs.first())
+                .map(|addr| {
+                    let mailbox = addr.mailbox.as_ref()
+                        .map(|m| String::from_utf8_lossy(m).to_string())
+                        .unwrap_or_default();
+                    let host = addr.host.as_ref()
+                        .map(|h| String::from_utf8_lossy(h).to_string())
+                        .unwrap_or_default();
+                    let email = format!("{}@{}", mailbox, host);
+                    let name = addr.name.as_ref()
+                        .map(|n| decode_mime_header(&String::from_utf8_lossy(n)));
+                    (email, name)
+                })
+                .unwrap_or_else(|| ("unknown".to_string(), None));
+
+            let to: Vec<String> = envelope
+                .and_then(|e| e.to.as_ref())
+                .map(|addrs| {
+                    addrs.iter().map(|addr| {
+                        let mailbox = addr.mailbox.as_ref()
+                            .map(|m| String::from_utf8_lossy(m).to_string())
+                            .unwrap_or_default();
+                        let host = addr.host.as_ref()
+                            .map(|h| String::from_utf8_lossy(h).to_string())
+                            .unwrap_or_default();
+                        format!("{}@{}", mailbox, host)
+                    }).collect()
+                })
+                .unwrap_or_default();
+
+            let cc: Vec<String> = envelope
+                .and_then(|e| e.cc.as_ref())
+                .map(|addrs| {
+                    addrs.iter().map(|addr| {
+                        let mailbox = addr.mailbox.as_ref()
+                            .map(|m| String::from_utf8_lossy(m).to_string())
+                            .unwrap_or_default();
+                        let host = addr.host.as_ref()
+                            .map(|h| String::from_utf8_lossy(h).to_string())
+                            .unwrap_or_default();
+                        format!("{}@{}", mailbox, host)
+                    }).collect()
+                })
+                .unwrap_or_default();
+
+            let subject = envelope
+                .and_then(|e| e.subject.as_ref())
+                .map(|s| decode_mime_header(&String::from_utf8_lossy(s)))
+                .unwrap_or_else(|| "(No subject)".to_string());
+
+            let date = envelope
+                .and_then(|e| e.date.as_ref())
+                .map(|d| String::from_utf8_lossy(d).to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            let message_id = envelope
+                .and_then(|e| e.message_id.as_ref())
+                .map(|id| String::from_utf8_lossy(id).to_string());
+
+            // Parse body
+            log::info!("fetch_email: parsing body...");
+            let body = message.body();
+            log::info!("fetch_email: body present={}", body.is_some());
+            let (body_text, body_html) = if let Some(body_bytes) = body {
+                log::info!("fetch_email: body size={} bytes", body_bytes.len());
+                parse_email_body(body_bytes)
+            } else {
+                log::warn!("fetch_email: no body found");
+                (None, None)
+            };
+
+            log::info!("Email fetched: subject={}, body_text_len={:?}, body_html_len={:?}",
+                subject, body_text.as_ref().map(|s| s.len()), body_html.as_ref().map(|s| s.len()));
+
+            return Ok(ParsedEmail {
+                uid,
+                message_id,
+                from,
+                from_name,
+                to,
+                cc,
+                subject,
+                date,
+                body_text,
+                body_html,
+                is_read,
+                is_starred,
+                attachments: vec![],
+            });
+        }
+
+        Err(MailError::Imap("Email not found".to_string()))
+    }
+}
+
+/// Parse email body from raw bytes
+fn parse_email_body(body: &[u8]) -> (Option<String>, Option<String>) {
+    // Try to parse with mail_parser
+    if let Some(parsed) = mail_parser::MessageParser::default().parse(body) {
+        let body_text = parsed.body_text(0).map(|s| s.to_string());
+        let body_html = parsed.body_html(0).map(|s| s.to_string());
+        return (body_text, body_html);
+    }
+
+    // Fallback: treat as plain text
+    let text = String::from_utf8_lossy(body).to_string();
+    (Some(text), None)
 }
