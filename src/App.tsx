@@ -651,6 +651,19 @@ function CommandPalette({ isOpen, onClose, onCommand }: { isOpen: boolean; onClo
 type Page = 'mail' | 'settings';
 type ComposeMode = 'new' | 'reply' | 'replyAll' | 'forward';
 
+// Map frontend folder ID to IMAP folder name
+function getImapFolderName(folderId: string): string {
+  const folderMap: Record<string, string> = {
+    inbox: 'INBOX',
+    sent: 'Sent',        // Common names: Sent, "Sent Items", "Sent Mail"
+    drafts: 'Drafts',
+    trash: 'Trash',      // Common names: Trash, "Deleted Items"
+    archive: 'Archive',
+    starred: 'INBOX',    // Starred is a flag, not a folder - filter locally
+  };
+  return folderMap[folderId] || 'INBOX';
+}
+
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('mail');
   const [activeFolder, setActiveFolder] = useState("inbox");
@@ -872,9 +885,10 @@ function App() {
       // Reconnect to refresh connection
       await connectAccount(account.id.toString());
 
-      // Fetch emails
-      const result = await listEmails(account.id.toString(), 0, 50, 'INBOX');
-      console.log('Sync result:', result);
+      // Fetch emails from current folder
+      const imapFolder = getImapFolderName(activeFolder);
+      const result = await listEmails(account.id.toString(), 0, 50, imapFolder);
+      console.log('Sync result for folder', imapFolder, ':', result);
 
       if (result && result.emails) {
         let newEmailCount = 0;
@@ -925,7 +939,7 @@ function App() {
     } finally {
       setIsSyncing(false);
     }
-  }, [accounts, isSyncing, selectedAccountId, notificationsEnabled]);
+  }, [accounts, isSyncing, selectedAccountId, notificationsEnabled, activeFolder]);
 
   // Handle account change
   const handleAccountChange = useCallback(async (accountId: number) => {
@@ -993,6 +1007,61 @@ function App() {
       setIsSyncing(false);
     }
   }, [selectedAccountId]);
+
+  // Handle folder change - fetch emails from the selected IMAP folder
+  const handleFolderChange = useCallback(async (folderId: string) => {
+    setActiveFolder(folderId);
+    setSelectedEmail(null);
+    setFetchedEmailIds(new Set());
+
+    // Starred is filtered locally, not a real folder
+    if (folderId === 'starred') {
+      return; // Just filter existing emails
+    }
+
+    if (!selectedAccountId || accounts.length === 0) return;
+
+    const imapFolder = getImapFolderName(folderId);
+    console.log('Switching to folder:', folderId, '-> IMAP:', imapFolder);
+
+    try {
+      setIsSyncing(true);
+      const { listEmails } = await import('./services/mailService');
+
+      const result = await listEmails(selectedAccountId.toString(), 0, 50, imapFolder);
+      console.log('Folder switch - listEmails result:', result);
+
+      if (result && result.emails) {
+        const loadedEmails: Email[] = result.emails.map((e: any) => {
+          const emailId = e.uid?.toString() || e.id?.toString();
+          return {
+            id: emailId,
+            from: { name: e.fromName || e.from || '', email: e.from || '' },
+            to: [{ name: '', email: '' }],
+            subject: e.subject || '(Konu yok)',
+            preview: e.preview || '',
+            body: e.bodyText || '',
+            bodyHtml: e.bodyHtml,
+            bodyText: e.bodyText,
+            date: new Date(e.date || Date.now()),
+            read: e.isRead ?? false,
+            starred: e.isStarred ?? false,
+            hasAttachments: e.hasAttachments ?? false,
+            hasImages: false,
+          };
+        });
+        setEmails(loadedEmails);
+        console.log('Loaded emails for folder:', imapFolder, 'count:', loadedEmails.length);
+      } else {
+        setEmails([]);
+      }
+    } catch (err) {
+      console.error('Failed to fetch folder:', err);
+      setEmails([]);
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [selectedAccountId, accounts]);
 
   // Modal states
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -1325,7 +1394,7 @@ function App() {
         selectedId={selectedEmail}
         onSelect={setSelectedEmail}
         activeFolder={activeFolder}
-        onFolderChange={setActiveFolder}
+        onFolderChange={handleFolderChange}
         onSettingsClick={() => setCurrentPage('settings')}
         onComposeClick={() => openCompose('new')}
         onSyncClick={handleSync}

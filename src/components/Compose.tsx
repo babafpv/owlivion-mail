@@ -79,6 +79,19 @@ export function Compose({
     }
   }, [isOpen, mode, originalEmail, defaultAccount]);
 
+  // Set initial body content in contentEditable (only on open/mode change)
+  const initializedRef = useRef(false);
+  useEffect(() => {
+    if (bodyRef.current && isOpen) {
+      // Set content when opening or when mode changes
+      bodyRef.current.innerHTML = bodyHtml;
+      initializedRef.current = true;
+    }
+    if (!isOpen) {
+      initializedRef.current = false;
+    }
+  }, [isOpen, mode]); // Don't depend on bodyHtml to avoid resetting on blur
+
   // Keyboard shortcuts
   useShortcut('Escape', onClose, { enabled: isOpen && !isSending });
   useShortcut('Ctrl+Enter', handleSend, { enabled: isOpen && !isSending, allowInInput: true });
@@ -353,10 +366,11 @@ export function Compose({
           <div
             ref={bodyRef}
             contentEditable
-            dangerouslySetInnerHTML={{ __html: bodyHtml }}
+            suppressContentEditableWarning
             className="min-h-[300px] p-6 text-owl-text focus:outline-none email-content"
+            style={{ direction: 'ltr', textAlign: 'left', unicodeBidi: 'plaintext' }}
             data-placeholder="E-posta içeriği..."
-            onInput={(e) => setBodyHtml(e.currentTarget.innerHTML)}
+            onBlur={(e) => setBodyHtml(e.currentTarget.innerHTML)}
           />
         </div>
 
