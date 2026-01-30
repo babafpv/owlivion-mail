@@ -434,9 +434,8 @@ export function AddAccountModal({
                       onChange={(e) => setImapSecurity(e.target.value as SecurityType)}
                       className="w-full px-4 py-2.5 bg-owl-bg border border-owl-border rounded-lg focus:outline-none focus:ring-2 focus:ring-owl-accent text-sm text-owl-text appearance-none cursor-pointer"
                     >
-                      <option value="SSL" className="bg-owl-bg text-owl-text">SSL/TLS</option>
+                      <option value="SSL" className="bg-owl-bg text-owl-text">SSL/TLS (Önerilen)</option>
                       <option value="STARTTLS" className="bg-owl-bg text-owl-text">STARTTLS</option>
-                      <option value="NONE" className="bg-owl-bg text-owl-text">Şifresiz (önerilmez)</option>
                     </select>
                   </div>
                 </div>
@@ -473,9 +472,8 @@ export function AddAccountModal({
                       onChange={(e) => setSmtpSecurity(e.target.value as SecurityType)}
                       className="w-full px-4 py-2.5 bg-owl-bg border border-owl-border rounded-lg focus:outline-none focus:ring-2 focus:ring-owl-accent text-sm text-owl-text appearance-none cursor-pointer"
                     >
-                      <option value="STARTTLS" className="bg-owl-bg text-owl-text">STARTTLS</option>
+                      <option value="STARTTLS" className="bg-owl-bg text-owl-text">STARTTLS (Önerilen)</option>
                       <option value="SSL" className="bg-owl-bg text-owl-text">SSL/TLS</option>
-                      <option value="NONE" className="bg-owl-bg text-owl-text">Şifresiz (önerilmez)</option>
                     </select>
                   </div>
                 </div>

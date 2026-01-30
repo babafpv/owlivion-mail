@@ -83,7 +83,33 @@ fn get_or_create_salt() -> Result<[u8; SALT_LEN], String> {
             .map_err(|e| format!("Failed to write salt: {}", e))?;
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        // Create file
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&salt_path)
+            .map_err(|e| format!("Failed to create salt file: {}", e))?;
+        file.write_all(&salt)
+            .map_err(|e| format!("Failed to write salt: {}", e))?;
+
+        // SECURITY: Set hidden attribute on Windows to reduce visibility
+        // Note: This doesn't provide strong security but helps prevent casual access
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use std::process::Command;
+            // Attempt to set hidden attribute using attrib command
+            let _ = Command::new("attrib")
+                .args(["+H", &salt_path.to_string_lossy()])
+                .output();
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         fs::write(&salt_path, &salt)
             .map_err(|e| format!("Failed to write salt: {}", e))?;

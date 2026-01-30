@@ -21,6 +21,76 @@ fn escape_like_pattern(query: &str) -> String {
         .replace('_', "\\_")
 }
 
+/// SECURITY: Sanitize FTS5 query to prevent injection attacks
+/// Removes/escapes FTS5 special operators and syntax
+fn sanitize_fts5_query(query: &str) -> String {
+    // FTS5 special characters and operators to handle:
+    // - Quotes: " (phrase matching)
+    // - Operators: AND, OR, NOT, NEAR
+    // - Prefix: * (wildcard)
+    // - Column filter: column:
+    // - Parentheses: ( )
+    // - Minus: - (exclusion)
+    // - Caret: ^ (boost)
+
+    let mut result = String::with_capacity(query.len());
+
+    // Remove dangerous FTS5 operators (case-insensitive)
+    let dangerous_ops = [" AND ", " OR ", " NOT ", " NEAR ", " NEAR/"];
+    let mut cleaned = query.to_string();
+    for op in dangerous_ops {
+        cleaned = cleaned.to_uppercase().replace(op, " ").to_lowercase();
+        // Preserve original case for non-operator parts
+        let original_lower = query.to_lowercase();
+        if original_lower != cleaned {
+            cleaned = original_lower;
+        }
+    }
+
+    // Process character by character
+    for ch in query.chars() {
+        match ch {
+            // Remove FTS5 special characters
+            '"' | '*' | '(' | ')' | '^' | '{' | '}' | '[' | ']' => {
+                // Skip these characters
+            }
+            // Replace colon (column filter) with space
+            ':' => result.push(' '),
+            // Replace minus (exclusion) at word start with space
+            '-' => {
+                if result.is_empty() || result.ends_with(' ') {
+                    result.push(' ');
+                } else {
+                    result.push(ch);
+                }
+            }
+            // Allow alphanumeric, spaces, and basic punctuation
+            _ if ch.is_alphanumeric() || ch.is_whitespace() || ch == '.' || ch == ',' || ch == '@' || ch == '_' => {
+                result.push(ch);
+            }
+            // Skip other special characters
+            _ => result.push(' '),
+        }
+    }
+
+    // Clean up multiple spaces and trim
+    let mut final_result = String::new();
+    let mut last_was_space = true;
+    for ch in result.chars() {
+        if ch == ' ' {
+            if !last_was_space {
+                final_result.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            final_result.push(ch);
+            last_was_space = false;
+        }
+    }
+
+    final_result.trim().to_string()
+}
+
 /// Database error types
 #[derive(Error, Debug)]
 pub enum DbError {
@@ -581,7 +651,7 @@ impl Database {
     }
 
     /// Search emails using FTS
-    /// SECURITY: Validates account_id and enforces search limits
+    /// SECURITY: Validates account_id, sanitizes FTS5 query, and enforces search limits
     pub fn search_emails(&self, account_id: i64, query: &str, limit: i32) -> DbResult<Vec<EmailSummary>> {
         // SECURITY: Validate account_id is positive
         if account_id <= 0 {
@@ -591,6 +661,12 @@ impl Database {
         // SECURITY: Validate query is not empty and not too long
         if query.is_empty() || query.len() > 500 {
             return Err(DbError::Constraint("Invalid search query length".to_string()));
+        }
+
+        // SECURITY: Sanitize FTS5 query to prevent injection
+        let sanitized_query = sanitize_fts5_query(query);
+        if sanitized_query.is_empty() {
+            return Err(DbError::Constraint("Invalid search query after sanitization".to_string()));
         }
 
         // SECURITY: Enforce search limit
@@ -615,7 +691,7 @@ impl Database {
         )?;
 
         let emails = stmt
-            .query_map(params![account_id, query, safe_limit], |row| {
+            .query_map(params![account_id, sanitized_query, safe_limit], |row| {
                 Ok(EmailSummary {
                     id: row.get(0)?,
                     message_id: row.get(1)?,

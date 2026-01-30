@@ -507,8 +507,9 @@ impl AsyncImapClient {
                 (None, None)
             };
 
-            log::info!("Email fetched: subject={}, body_text_len={:?}, body_html_len={:?}",
-                subject, body_text.as_ref().map(|s| s.len()), body_html.as_ref().map(|s| s.len()));
+            // SECURITY: Don't log email subject/content in production
+            log::debug!("Email fetched: uid={}, body_text_len={:?}, body_html_len={:?}",
+                uid, body_text.as_ref().map(|s| s.len()), body_html.as_ref().map(|s| s.len()));
 
             return Ok(ParsedEmail {
                 uid,

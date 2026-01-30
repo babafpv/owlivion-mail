@@ -11,7 +11,58 @@ use mail::{fetch_autoconfig, AsyncImapClient, AutoConfig, ImapClient, ImapConfig
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::State;
+use zeroize::Zeroize;
+
+// ============================================================================
+// Rate Limiting for Connection Attempts
+// ============================================================================
+
+/// SECURITY: Rate limiter to prevent brute-force and DoS attacks
+struct ConnectionRateLimiter {
+    attempts: Mutex<HashMap<String, Vec<Instant>>>,
+    max_attempts: usize,
+    window: Duration,
+}
+
+impl ConnectionRateLimiter {
+    fn new(max_attempts: usize, window_secs: u64) -> Self {
+        Self {
+            attempts: Mutex::new(HashMap::new()),
+            max_attempts,
+            window: Duration::from_secs(window_secs),
+        }
+    }
+
+    fn check_rate_limit(&self, key: &str) -> Result<(), String> {
+        let mut attempts = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+
+        // Clean up old entries
+        if let Some(timestamps) = attempts.get_mut(key) {
+            timestamps.retain(|t| now.duration_since(*t) < self.window);
+
+            if timestamps.len() >= self.max_attempts {
+                return Err(format!(
+                    "Too many connection attempts. Please wait {} seconds.",
+                    self.window.as_secs()
+                ));
+            }
+            timestamps.push(now);
+        } else {
+            attempts.insert(key.to_string(), vec![now]);
+        }
+
+        Ok(())
+    }
+}
+
+lazy_static::lazy_static! {
+    /// Global rate limiter: max 5 connection attempts per minute per account
+    static ref CONNECTION_RATE_LIMITER: ConnectionRateLimiter =
+        ConnectionRateLimiter::new(5, 60);
+}
 
 /// Result wrapper for API responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +194,31 @@ fn validate_host(host: &str) -> Result<(), String> {
                 if ipv6.is_loopback() || ipv6.is_unspecified() {
                     return Err("Loopback/unspecified IPv6 addresses are not allowed".to_string());
                 }
+                // SECURITY: Check IPv6 private ranges
+                let segments = ipv6.segments();
+                // fc00::/7 (Unique Local Address)
+                if (segments[0] & 0xfe00) == 0xfc00 {
+                    return Err("IPv6 Unique Local Address (ULA) is not allowed".to_string());
+                }
+                // fe80::/10 (Link-local)
+                if (segments[0] & 0xffc0) == 0xfe80 {
+                    return Err("IPv6 Link-local address is not allowed".to_string());
+                }
+                // ::ffff:0:0/96 (IPv4-mapped IPv6)
+                if segments[0] == 0 && segments[1] == 0 && segments[2] == 0
+                    && segments[3] == 0 && segments[4] == 0 && segments[5] == 0xffff
+                {
+                    // Extract IPv4 part and validate
+                    let ipv4_part = ((segments[6] as u32) << 16) | (segments[7] as u32);
+                    let ipv4 = std::net::Ipv4Addr::from(ipv4_part);
+                    if ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local() {
+                        return Err("IPv4-mapped IPv6 address with private IPv4 is not allowed".to_string());
+                    }
+                }
+                // fec0::/10 (Site-local, deprecated but block anyway)
+                if (segments[0] & 0xffc0) == 0xfec0 {
+                    return Err("IPv6 Site-local address is not allowed".to_string());
+                }
             }
         }
     }
@@ -175,6 +251,44 @@ fn validate_port(port: u16) -> Result<(), String> {
             port, ALLOWED_PORTS
         ))
     }
+}
+
+/// SECURITY: Sanitize error messages to prevent information leakage
+/// Removes server details, internal paths, and sensitive data
+fn sanitize_error_message(error: &str) -> String {
+    let error_lower = error.to_lowercase();
+
+    // Map common errors to generic messages
+    if error_lower.contains("authentication") || error_lower.contains("invalid credentials") || error_lower.contains("login") {
+        return "Authentication failed. Please check your email and password.".to_string();
+    }
+
+    if error_lower.contains("connection refused") || error_lower.contains("connect error") {
+        return "Could not connect to server. Please check the host and port.".to_string();
+    }
+
+    if error_lower.contains("timeout") || error_lower.contains("timed out") {
+        return "Connection timed out. Server may be unavailable.".to_string();
+    }
+
+    if error_lower.contains("certificate") || error_lower.contains("ssl") || error_lower.contains("tls") {
+        return "SSL/TLS error. Server certificate may be invalid.".to_string();
+    }
+
+    if error_lower.contains("dns") || error_lower.contains("resolve") || error_lower.contains("hostname") {
+        return "Could not resolve server address. Please check the hostname.".to_string();
+    }
+
+    if error_lower.contains("permission") || error_lower.contains("access denied") {
+        return "Access denied by server.".to_string();
+    }
+
+    if error_lower.contains("too many") || error_lower.contains("rate limit") {
+        return "Too many requests. Please wait and try again.".to_string();
+    }
+
+    // Generic fallback - don't expose original error
+    "Connection error. Please check your settings and try again.".to_string()
 }
 
 /// Validate email format (RFC 5321 basic compliance)
@@ -247,34 +361,39 @@ async fn autoconfig_detect(email: String) -> Result<AutoConfig, String> {
 }
 
 /// Test IMAP connection
-/// SECURITY: Input validation to prevent SSRF
+/// SECURITY: Input validation, rate limiting, error sanitization
 #[tauri::command]
 async fn account_test_imap(
     host: String,
     port: u16,
     security: String,
     email: String,
-    password: String,
+    mut password: String,
 ) -> Result<(), String> {
+    // SECURITY: Rate limiting to prevent brute-force attacks
+    let rate_key = format!("imap:{}:{}", host, email);
+    CONNECTION_RATE_LIMITER.check_rate_limit(&rate_key)?;
+
     // SECURITY: Validate all inputs
     validate_host(&host)?;
     validate_port(port)?;
     validate_email(&email)?;
     validate_security_type(&security)?;
 
-    log::info!("Testing IMAP connection to {}:{} with security: {}", host, port, security);
-    log::info!("Username: {}", email);
+    log::info!("Testing IMAP connection to {}:{}", host, port);
 
     let sec = parse_security(&security);
-    log::info!("Parsed security type: {:?}", sec);
 
     let config = ImapConfig {
         host: host.clone(),
         port,
         security: sec,
         username: email.clone(),
-        password,
+        password: password.clone(),
     };
+
+    // SECURITY: Zeroize password after creating config
+    password.zeroize();
 
     // Run in blocking task since imap crate is synchronous
     let result = tokio::task::spawn_blocking(move || {
@@ -285,32 +404,36 @@ async fn account_test_imap(
 
     match result {
         Ok(Ok(())) => {
-            log::info!("IMAP connection test successful for {}", email);
+            log::info!("IMAP connection test successful");
             Ok(())
         }
         Ok(Err(e)) => {
-            let err_msg = format!("IMAP error: {}", e);
-            log::error!("{}", err_msg);
-            Err(err_msg)
+            // SECURITY: Sanitize error message to not leak server details
+            let sanitized_err = sanitize_error_message(&e.to_string());
+            log::error!("IMAP test failed: {}", sanitized_err);
+            Err(sanitized_err)
         }
-        Err(e) => {
-            let err_msg = format!("Task panic: {}", e);
-            log::error!("{}", err_msg);
-            Err(err_msg)
+        Err(_) => {
+            // SECURITY: Don't expose internal task errors
+            Err("Connection test failed unexpectedly".to_string())
         }
     }
 }
 
 /// Test SMTP connection
-/// SECURITY: Input validation to prevent SSRF
+/// SECURITY: Input validation, rate limiting, error sanitization
 #[tauri::command]
 async fn account_test_smtp(
     host: String,
     port: u16,
     security: String,
     email: String,
-    password: String,
+    mut password: String,
 ) -> Result<(), String> {
+    // SECURITY: Rate limiting to prevent brute-force attacks
+    let rate_key = format!("smtp:{}:{}", host, email);
+    CONNECTION_RATE_LIMITER.check_rate_limit(&rate_key)?;
+
     // SECURITY: Validate all inputs
     validate_host(&host)?;
     validate_port(port)?;
@@ -328,20 +451,23 @@ async fn account_test_smtp(
         return Err("Invalid SMTP configuration".to_string());
     }
 
-    let creds = Credentials::new(email.clone(), password);
+    let creds = Credentials::new(email.clone(), password.clone());
     let security_type = parse_security(&security);
+
+    // SECURITY: Zeroize password after creating credentials
+    password.zeroize();
 
     let mailer: AsyncSmtpTransport<lettre::Tokio1Executor> = match security_type {
         SecurityType::SSL => {
             AsyncSmtpTransport::<lettre::Tokio1Executor>::relay(&host)
-                .map_err(|e| format!("Failed to create SMTP transport: {}", e))?
+                .map_err(|e| sanitize_error_message(&format!("{}", e)))?
                 .credentials(creds)
                 .port(port)
                 .build()
         }
         SecurityType::STARTTLS => {
             AsyncSmtpTransport::<lettre::Tokio1Executor>::starttls_relay(&host)
-                .map_err(|e| format!("Failed to create SMTP transport: {}", e))?
+                .map_err(|e| sanitize_error_message(&format!("{}", e)))?
                 .credentials(creds)
                 .port(port)
                 .build()
@@ -353,7 +479,7 @@ async fn account_test_smtp(
 
     // Test connection by checking if we can connect
     mailer.test_connection().await
-        .map_err(|e| format!("SMTP connection failed: {}", e))?;
+        .map_err(|e| sanitize_error_message(&format!("{}", e)))?;
 
     log::info!("SMTP connection test successful");
     Ok(())
@@ -500,21 +626,27 @@ async fn account_list(state: State<'_, AppState>) -> Result<Vec<db::Account>, St
 }
 
 /// Connect to an account (used when app starts or reconnecting)
+/// SECURITY: Validates stored configuration before connecting
 #[tauri::command]
 async fn account_connect(state: State<'_, AppState>, account_id: String) -> Result<(), String> {
     log::info!("Connecting to account: {}", account_id);
     let id: i64 = account_id.parse().map_err(|_| "Invalid account ID")?;
 
     let account = state.db.get_account(id)
-        .map_err(|e| format!("Database error: {}", e))?;
+        .map_err(|_| "Database error".to_string())?;
+
+    // SECURITY: Validate stored host and port before connecting
+    validate_host(&account.imap_host)?;
+    validate_port(account.imap_port as u16)?;
+    validate_security_type(&account.imap_security)?;
 
     let encrypted_password = state.db.get_account_password(id)
-        .map_err(|e| format!("Database error: {}", e))?
+        .map_err(|_| "Database error".to_string())?
         .ok_or_else(|| "No password stored".to_string())?;
 
     // Decrypt password
-    let password = crypto::decrypt_password(&encrypted_password)
-        .map_err(|e| format!("Password decryption failed: {}", e))?;
+    let mut password = crypto::decrypt_password(&encrypted_password)
+        .map_err(|_| "Password decryption failed".to_string())?;
 
     let config = ImapConfig {
         host: account.imap_host.clone(),
@@ -524,15 +656,18 @@ async fn account_connect(state: State<'_, AppState>, account_id: String) -> Resu
         password: password.clone(),
     };
 
+    // SECURITY: Zeroize password after creating config
+    password.zeroize();
+
     // Create async IMAP client only (sync client has parser issues)
     let mut async_client = AsyncImapClient::new(config);
-    async_client.connect().await.map_err(|e| e.to_string())?;
+    async_client.connect().await.map_err(|e| sanitize_error_message(&e.to_string()))?;
 
     // Store async client
     let mut async_clients = state.async_imap_clients.lock().await;
     async_clients.insert(account_id.clone(), async_client);
 
-    log::info!("Account {} connected successfully", account_id);
+    log::info!("Account connected successfully");
     Ok(())
 }
 

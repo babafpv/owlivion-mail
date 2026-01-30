@@ -331,10 +331,8 @@ impl ImapClient {
 
         let has_more = start > 1;
 
-        log::info!("Returning {} emails, total={}, has_more={}", emails.len(), total, has_more);
-        for (i, email) in emails.iter().take(3).enumerate() {
-            log::info!("  Email {}: uid={}, from={}, subject={}", i, email.uid, email.from, email.subject);
-        }
+        // SECURITY: Don't log email content/metadata in production
+        log::debug!("Returning {} emails, total={}, has_more={}", emails.len(), total, has_more);
 
         Ok(FetchResult {
             emails,

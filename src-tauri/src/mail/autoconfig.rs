@@ -190,18 +190,11 @@ fn get_preset(domain: &str) -> Option<AutoConfig> {
             })
         }
 
-        // ProtonMail (via Bridge)
-        "protonmail.com" | "proton.me" | "pm.me" => Some(AutoConfig {
-            provider: Some("ProtonMail".to_string()),
-            display_name: Some("ProtonMail (Bridge)".to_string()),
-            imap_host: "127.0.0.1".to_string(),
-            imap_port: 1143,
-            imap_security: SecurityType::STARTTLS,
-            smtp_host: "127.0.0.1".to_string(),
-            smtp_port: 1025,
-            smtp_security: SecurityType::STARTTLS,
-            detection_method: None,
-        }),
+        // ProtonMail - SECURITY: Removed localhost preset
+        // ProtonMail requires Bridge app which uses localhost.
+        // Users must configure manually after installing ProtonMail Bridge.
+        // Returning None forces manual configuration to prevent SSRF bypass.
+        "protonmail.com" | "proton.me" | "pm.me" => None,
 
         // Zoho Mail
         d if d == "zoho.com" || d == "zohomail.com" => Some(AutoConfig {

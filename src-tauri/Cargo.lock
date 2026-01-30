@@ -3095,6 +3095,7 @@ dependencies = [
  "hickory-resolver",
  "hostname",
  "imap",
+ "lazy_static",
  "lettre",
  "log",
  "mail-parser",
