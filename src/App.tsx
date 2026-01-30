@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import DOMPurify from "dompurify";
 import "./App.css";
 import owlivionIcon from "./assets/owlivion-logo.svg";
 import { Settings } from "./pages/Settings";
@@ -10,6 +11,32 @@ import { AddAccountModal } from "./components/settings/AddAccountModal";
 import { summarizeEmail } from "./services/geminiService";
 import { requestNotificationPermission, showNewEmailNotification, playNotificationSound } from "./services/notificationService";
 import type { DraftEmail, EmailAddress, Account, ImapFolder } from "./types";
+
+// Configure DOMPurify to remove dangerous content
+const purifyConfig = {
+  ALLOWED_TAGS: ['p', 'br', 'b', 'i', 'u', 'strong', 'em', 'a', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'code', 'span', 'div', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr'],
+  ALLOWED_ATTR: ['href', 'target', 'rel', 'class', 'style', 'align', 'valign', 'width', 'height', 'colspan', 'rowspan'],
+  ALLOW_DATA_ATTR: false,
+  FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'textarea', 'select'],
+  FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur'],
+  RETURN_TRUSTED_TYPE: false,
+};
+
+// Sanitize HTML with optional image blocking
+function sanitizeEmailHtml(html: string, blockImages: boolean = true): string {
+  // First pass: DOMPurify for XSS protection
+  let sanitized = DOMPurify.sanitize(html, purifyConfig) as string;
+
+  // Second pass: Block images if requested
+  if (blockImages) {
+    sanitized = sanitized.replace(/<img[^>]*>/gi, '<div style="background: #1a1a24; padding: 20px; text-align: center; color: #71717a; border-radius: 8px; margin: 10px 0;">[Resim gizlendi]</div>');
+  }
+
+  // Force external links to open in new tab with noopener
+  sanitized = sanitized.replace(/<a\s+([^>]*href=)/gi, '<a target="_blank" rel="noopener noreferrer" $1');
+
+  return sanitized;
+}
 
 // Simple Icon Components
 const Icons = {
@@ -658,8 +685,9 @@ function EmailView({
   const shouldShowImages = showImages || isTrustedSender;
   const hasHtmlContent = email.bodyHtml && email.hasImages;
 
-  const sanitizedHtml = hasHtmlContent && !shouldShowImages
-    ? email.bodyHtml!.replace(/<img[^>]*>/gi, '<div style="background: #1a1a24; padding: 20px; text-align: center; color: #71717a; border-radius: 8px; margin: 10px 0;">[Resim gizlendi]</div>')
+  // Sanitize HTML with DOMPurify for XSS protection
+  const sanitizedHtml = hasHtmlContent
+    ? sanitizeEmailHtml(email.bodyHtml!, !shouldShowImages)
     : email.bodyHtml;
 
   return (
@@ -768,7 +796,7 @@ function EmailView({
 
       <div className="flex-1 overflow-y-auto p-6">
         {hasHtmlContent ? (
-          <div className="email-content text-owl-text leading-relaxed" dangerouslySetInnerHTML={{ __html: shouldShowImages ? email.bodyHtml! : sanitizedHtml! }} />
+          <div className="email-content text-owl-text leading-relaxed" dangerouslySetInnerHTML={{ __html: sanitizedHtml! }} />
         ) : (
           <div className="whitespace-pre-wrap text-owl-text leading-relaxed">{email.body}</div>
         )}
@@ -901,6 +929,23 @@ function App() {
 
   // Email cache per account (to avoid re-fetching when switching)
   const emailCache = useRef<Map<number, Email[]>>(new Map());
+
+  // Settings state for API keys
+  const [geminiApiKey, setGeminiApiKey] = useState<string | undefined>(undefined);
+
+  // Load API key from settings on mount
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const { getSettings } = await import('./services/mailService');
+        const settings = await getSettings();
+        setGeminiApiKey(settings.geminiApiKey);
+      } catch (err) {
+        console.error('Failed to load settings:', err);
+      }
+    };
+    loadSettings();
+  }, []);
 
   // Fetch folders for an account
   const fetchFolders = useCallback(async (accountId: number) => {
@@ -1428,29 +1473,73 @@ function App() {
     }
   }, [selectedEmail, selectedAccountId, emails, activeFolder]);
 
-  const handleToggleRead = useCallback(() => {
-    if (!selectedEmail) return;
-    setEmails(prev => prev.map(e => e.id === selectedEmail ? { ...e, read: !e.read } : e));
-  }, [selectedEmail]);
+  const handleToggleRead = useCallback(async () => {
+    if (!selectedEmail || !selectedAccountId) return;
 
-  const handleArchive = useCallback(() => {
-    if (!selectedEmail) return;
+    const email = emails.find(e => e.id === selectedEmail);
+    if (!email) return;
+
+    const newRead = !email.read;
+
+    // Optimistic update
+    setEmails(prev => prev.map(e => e.id === selectedEmail ? { ...e, read: newRead } : e));
+
+    // Call backend
+    try {
+      const { markEmailRead } = await import('./services/mailService');
+      await markEmailRead(selectedAccountId.toString(), parseInt(selectedEmail), newRead, activeFolder);
+    } catch (err) {
+      console.error('Failed to toggle read:', err);
+      // Revert on error
+      setEmails(prev => prev.map(e => e.id === selectedEmail ? { ...e, read: !newRead } : e));
+    }
+  }, [selectedEmail, selectedAccountId, emails, activeFolder]);
+
+  const handleArchive = useCallback(async () => {
+    if (!selectedEmail || !selectedAccountId) return;
+
+    // Optimistic update
     setEmails(prev => prev.map(e => e.id === selectedEmail ? { ...e, archived: true } : e));
+
     // Select next email
     const idx = visibleEmails.findIndex(e => e.id === selectedEmail);
-    if (idx < visibleEmails.length - 1) setSelectedEmail(visibleEmails[idx + 1].id);
-    else if (idx > 0) setSelectedEmail(visibleEmails[idx - 1].id);
-    else setSelectedEmail(null);
-  }, [selectedEmail, visibleEmails]);
+    const nextEmail = idx < visibleEmails.length - 1 ? visibleEmails[idx + 1].id :
+                      idx > 0 ? visibleEmails[idx - 1].id : null;
+    setSelectedEmail(nextEmail);
 
-  const handleDelete = useCallback(() => {
-    if (!selectedEmail) return;
+    // Call backend
+    try {
+      const { archiveEmail } = await import('./services/mailService');
+      await archiveEmail(selectedAccountId.toString(), parseInt(selectedEmail));
+    } catch (err) {
+      console.error('Failed to archive:', err);
+      // Revert on error
+      setEmails(prev => prev.map(e => e.id === selectedEmail ? { ...e, archived: false } : e));
+    }
+  }, [selectedEmail, selectedAccountId, visibleEmails]);
+
+  const handleDelete = useCallback(async () => {
+    if (!selectedEmail || !selectedAccountId) return;
+
+    // Optimistic update
     setEmails(prev => prev.map(e => e.id === selectedEmail ? { ...e, deleted: true } : e));
+
+    // Select next email
     const idx = visibleEmails.findIndex(e => e.id === selectedEmail);
-    if (idx < visibleEmails.length - 1) setSelectedEmail(visibleEmails[idx + 1].id);
-    else if (idx > 0) setSelectedEmail(visibleEmails[idx - 1].id);
-    else setSelectedEmail(null);
-  }, [selectedEmail, visibleEmails]);
+    const nextEmail = idx < visibleEmails.length - 1 ? visibleEmails[idx + 1].id :
+                      idx > 0 ? visibleEmails[idx - 1].id : null;
+    setSelectedEmail(nextEmail);
+
+    // Call backend
+    try {
+      const { deleteEmail } = await import('./services/mailService');
+      await deleteEmail(selectedAccountId.toString(), parseInt(selectedEmail), false, activeFolder);
+    } catch (err) {
+      console.error('Failed to delete:', err);
+      // Revert on error
+      setEmails(prev => prev.map(e => e.id === selectedEmail ? { ...e, deleted: false } : e));
+    }
+  }, [selectedEmail, selectedAccountId, visibleEmails, activeFolder]);
 
   const handleLoadImages = () => {
     if (selectedEmail && !loadedImageEmails.includes(selectedEmail)) {
@@ -1497,16 +1586,21 @@ function App() {
   // Summarize
   const handleSummarize = useCallback(async () => {
     if (!currentEmail || summarizingId) return;
+    if (!geminiApiKey) {
+      console.error("Gemini API key not set. Please configure it in Settings > AI.");
+      alert("Gemini API anahtarı ayarlanmamış. Lütfen Ayarlar > AI bölümünden ayarlayın.");
+      return;
+    }
     setSummarizingId(currentEmail.id);
     try {
-      const summary = await summarizeEmail(currentEmail.body);
+      const summary = await summarizeEmail(currentEmail.body, 'tr', geminiApiKey);
       setSummaries(prev => ({ ...prev, [currentEmail.id]: summary }));
     } catch (err) {
       console.error("Summarize failed:", err);
     } finally {
       setSummarizingId(null);
     }
-  }, [currentEmail, summarizingId]);
+  }, [currentEmail, summarizingId, geminiApiKey]);
 
   // Command handler
   const handleCommand = useCallback((cmd: string) => {
@@ -1590,17 +1684,28 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [commandPaletteOpen, aiReplyOpen, composeOpen, shortcutsHelpOpen, currentEmail, navigateEmail, openCompose, handleArchive, handleDelete, handleToggleStar, handleToggleRead]);
 
-  // Mark as read when selected
+  // Mark as read when selected (with backend call)
   useEffect(() => {
-    if (selectedEmail) {
+    if (selectedEmail && selectedAccountId) {
       const email = emails.find(e => e.id === selectedEmail);
       if (email && !email.read) {
-        setTimeout(() => {
+        const timeoutId = setTimeout(async () => {
+          // Optimistic update
           setEmails(prev => prev.map(e => e.id === selectedEmail ? { ...e, read: true } : e));
+
+          // Call backend
+          try {
+            const { markEmailRead } = await import('./services/mailService');
+            await markEmailRead(selectedAccountId.toString(), parseInt(selectedEmail), true, activeFolder);
+          } catch (err) {
+            console.error('Failed to mark as read:', err);
+          }
         }, 2000);
+
+        return () => clearTimeout(timeoutId);
       }
     }
-  }, [selectedEmail, emails]);
+  }, [selectedEmail, selectedAccountId, activeFolder]);
 
   // Handle account added
   const handleAccountAdded = async (account: Account) => {
@@ -1718,6 +1823,7 @@ function App() {
             emailContent={currentEmail.body}
             emailSubject={currentEmail.subject}
             senderName={currentEmail.from.name}
+            apiKey={geminiApiKey}
           />
 
           <Compose

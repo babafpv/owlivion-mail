@@ -469,6 +469,173 @@ impl AsyncImapClient {
 
         Err(MailError::Imap("Email not found".to_string()))
     }
+
+    /// Search emails
+    pub async fn search(&mut self, folder: &str, query: &str) -> MailResult<Vec<u32>> {
+        let session = self.session.as_mut().ok_or(MailError::NotConnected)?;
+
+        session
+            .select(folder)
+            .await
+            .map_err(|e| MailError::Imap(e.to_string()))?;
+
+        // Search in subject, from, and body
+        // Escape quotes in query to prevent IMAP injection
+        let escaped_query = query.replace("\"", "\\\"");
+        let search_query = format!("OR OR SUBJECT \"{}\" FROM \"{}\" BODY \"{}\"", escaped_query, escaped_query, escaped_query);
+
+        let uids_set = session
+            .uid_search(&search_query)
+            .await
+            .map_err(|e| MailError::Imap(e.to_string()))?;
+
+        Ok(uids_set.into_iter().collect())
+    }
+
+    /// Mark email as read/unread
+    pub async fn set_read(&mut self, folder: &str, uid: u32, read: bool) -> MailResult<()> {
+        let session = self.session.as_mut().ok_or(MailError::NotConnected)?;
+
+        session
+            .select(folder)
+            .await
+            .map_err(|e| MailError::Imap(e.to_string()))?;
+
+        let uid_str = uid.to_string();
+        let flag_cmd = if read { "+FLAGS (\\Seen)" } else { "-FLAGS (\\Seen)" };
+
+        // Execute the store command and consume the stream
+        let mut stream = session
+            .uid_store(&uid_str, flag_cmd)
+            .await
+            .map_err(|e| MailError::Imap(e.to_string()))?;
+        while let Some(_) = stream.next().await {}
+
+        Ok(())
+    }
+
+    /// Mark email as starred/unstarred
+    pub async fn set_starred(&mut self, folder: &str, uid: u32, starred: bool) -> MailResult<()> {
+        let session = self.session.as_mut().ok_or(MailError::NotConnected)?;
+
+        session
+            .select(folder)
+            .await
+            .map_err(|e| MailError::Imap(e.to_string()))?;
+
+        let uid_str = uid.to_string();
+        let flag_cmd = if starred { "+FLAGS (\\Flagged)" } else { "-FLAGS (\\Flagged)" };
+
+        // Execute the store command and consume the stream
+        let mut stream = session
+            .uid_store(&uid_str, flag_cmd)
+            .await
+            .map_err(|e| MailError::Imap(e.to_string()))?;
+        while let Some(_) = stream.next().await {}
+
+        Ok(())
+    }
+
+    /// Move email to another folder
+    pub async fn move_email(&mut self, folder: &str, uid: u32, target_folder: &str) -> MailResult<()> {
+        let session = self.session.as_mut().ok_or(MailError::NotConnected)?;
+
+        session
+            .select(folder)
+            .await
+            .map_err(|e| MailError::Imap(e.to_string()))?;
+
+        let uid_str = uid.to_string();
+
+        // Copy to target folder
+        session
+            .uid_copy(&uid_str, target_folder)
+            .await
+            .map_err(|e| MailError::Imap(e.to_string()))?;
+
+        // Mark original as deleted and consume the stream
+        {
+            let mut stream = session
+                .uid_store(&uid_str, "+FLAGS (\\Deleted)")
+                .await
+                .map_err(|e| MailError::Imap(e.to_string()))?;
+            while let Some(_) = stream.next().await {}
+        } // stream is dropped here
+
+        // Expunge deleted messages
+        session
+            .expunge()
+            .await
+            .map_err(|e| MailError::Imap(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Delete email
+    pub async fn delete_email(&mut self, folder: &str, uid: u32, permanent: bool) -> MailResult<()> {
+        let session = self.session.as_mut().ok_or(MailError::NotConnected)?;
+
+        session
+            .select(folder)
+            .await
+            .map_err(|e| MailError::Imap(e.to_string()))?;
+
+        let uid_str = uid.to_string();
+
+        if permanent {
+            // Mark as deleted and consume the stream
+            {
+                let mut stream = session
+                    .uid_store(&uid_str, "+FLAGS (\\Deleted)")
+                    .await
+                    .map_err(|e| MailError::Imap(e.to_string()))?;
+                while let Some(_) = stream.next().await {}
+            } // stream is dropped here
+
+            // Expunge
+            session
+                .expunge()
+                .await
+                .map_err(|e| MailError::Imap(e.to_string()))?;
+        } else {
+            // Move to Trash folder - try common trash folder names
+            let trash_folders = ["Trash", "[Gmail]/Trash", "Deleted Items", "Deleted"];
+            let mut moved = false;
+
+            for trash in &trash_folders {
+                if session.uid_copy(&uid_str, trash).await.is_ok() {
+                    // Mark as deleted and consume the stream
+                    {
+                        let mut stream = session
+                            .uid_store(&uid_str, "+FLAGS (\\Deleted)")
+                            .await
+                            .map_err(|e| MailError::Imap(e.to_string()))?;
+                        while let Some(_) = stream.next().await {}
+                    } // stream is dropped here
+
+                    // Expunge
+                    session
+                        .expunge()
+                        .await
+                        .map_err(|e| MailError::Imap(e.to_string()))?;
+
+                    moved = true;
+                    break;
+                }
+            }
+
+            if !moved {
+                // If no trash folder found, just mark as deleted
+                let mut stream = session
+                    .uid_store(&uid_str, "+FLAGS (\\Deleted)")
+                    .await
+                    .map_err(|e| MailError::Imap(e.to_string()))?;
+                while let Some(_) = stream.next().await {}
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Parse email body from raw bytes

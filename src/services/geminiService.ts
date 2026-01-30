@@ -7,18 +7,18 @@ import type { AIReplyRequest, AIReplyResponse, Settings } from '../types';
 const GEMINI_API_URL =
   'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
-// Embedded API Key
-const GEMINI_API_KEY = 'REDACTED_API_KEY';
-
-export { GEMINI_API_KEY };
+// API key must be provided by user in settings - no hardcoded key for security
 
 /**
  * Generate AI reply for an email
  */
 export async function generateReply(
   request: AIReplyRequest,
-  apiKey: string = GEMINI_API_KEY
+  apiKey: string
 ): Promise<AIReplyResponse> {
+  if (!apiKey) {
+    throw new Error('Gemini API key is required. Please set it in Settings > AI.');
+  }
   const systemPrompt = getSystemPrompt(request.tone, request.language);
   const userPrompt = getUserPrompt(request);
 
@@ -86,8 +86,11 @@ export async function generateReply(
 export async function summarizeEmail(
   emailContent: string,
   language: 'tr' | 'en' = 'tr',
-  apiKey: string = GEMINI_API_KEY
+  apiKey?: string
 ): Promise<string> {
+  if (!apiKey) {
+    throw new Error('Gemini API key is required. Please set it in Settings > AI.');
+  }
   const prompt =
     language === 'tr'
       ? `Bu e-postayı kısa ve öz bir şekilde özetle (3-5 cümle). Ana konuyu, önemli noktaları ve varsa eylem öğelerini belirt:
@@ -136,8 +139,11 @@ Summary:`;
 export async function extractActionItems(
   emailContent: string,
   language: 'tr' | 'en' = 'tr',
-  apiKey: string = GEMINI_API_KEY
+  apiKey?: string
 ): Promise<string[]> {
+  if (!apiKey) {
+    throw new Error('Gemini API key is required. Please set it in Settings > AI.');
+  }
   const prompt =
     language === 'tr'
       ? `Bu e-postadan yapılması gereken işleri (action items) çıkar. Her bir maddeyi ayrı bir satırda, madde işareti olmadan yaz. Eğer eylem öğesi yoksa "YOK" yaz.
@@ -194,8 +200,11 @@ Action items:`;
  */
 export async function analyzeSentiment(
   emailContent: string,
-  apiKey: string = GEMINI_API_KEY
+  apiKey?: string
 ): Promise<'positive' | 'negative' | 'neutral'> {
+  if (!apiKey) {
+    throw new Error('Gemini API key is required. Please set it in Settings > AI.');
+  }
   const prompt = `Analyze the sentiment of this email and respond with exactly one word: "positive", "negative", or "neutral".
 
 Email:
@@ -296,7 +305,10 @@ ${request.language === 'tr' ? 'Yanıt' : 'Reply'}:`;
 /**
  * Test API connection
  */
-export async function testConnection(apiKey: string = GEMINI_API_KEY): Promise<boolean> {
+export async function testConnection(apiKey?: string): Promise<boolean> {
+  if (!apiKey) {
+    return false;
+  }
   try {
     const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
       method: 'POST',

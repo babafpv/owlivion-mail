@@ -3,10 +3,22 @@
 // ============================================================================
 
 import React, { useState, useEffect, useRef } from 'react';
+import DOMPurify from 'dompurify';
 import { useShortcut } from '../hooks/useKeyboardShortcuts';
 import { RecipientInput } from './compose/RecipientInput';
 import { AttachmentList } from './compose/AttachmentList';
 import type { Email, EmailAddress, DraftEmail, Attachment, Account } from '../types';
+
+// Sanitize HTML for Compose (more permissive for editing)
+const sanitizeForCompose = (html: string): string => {
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ['p', 'br', 'b', 'i', 'u', 'strong', 'em', 'a', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'code', 'span', 'div', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr', 'img'],
+    ALLOWED_ATTR: ['href', 'target', 'rel', 'class', 'style', 'align', 'valign', 'width', 'height', 'colspan', 'rowspan', 'src', 'alt'],
+    ALLOW_DATA_ATTR: false,
+    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'textarea', 'select'],
+    FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur'],
+  });
+};
 
 interface ComposeProps {
   isOpen: boolean;
@@ -83,8 +95,8 @@ export function Compose({
   const initializedRef = useRef(false);
   useEffect(() => {
     if (bodyRef.current && isOpen) {
-      // Set content when opening or when mode changes
-      bodyRef.current.innerHTML = bodyHtml;
+      // Set content when opening or when mode changes - sanitize for security
+      bodyRef.current.innerHTML = sanitizeForCompose(bodyHtml);
       initializedRef.current = true;
     }
     if (!isOpen) {

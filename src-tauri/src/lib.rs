@@ -490,13 +490,12 @@ async fn email_search(
             .and_then(|f| f.get(&account_id).cloned())
     }).unwrap_or_else(|| "INBOX".to_string());
 
-    let mut clients = state.imap_clients.lock().map_err(|e| e.to_string())?;
-
-    let client = clients
+    let mut async_clients = state.async_imap_clients.lock().await;
+    let client = async_clients
         .get_mut(&account_id)
         .ok_or_else(|| "Account not connected".to_string())?;
 
-    let uids = client.search(&folder_path, &query).map_err(|e| e.to_string())?;
+    let uids = client.search(&folder_path, &query).await.map_err(|e| e.to_string())?;
 
     Ok(uids)
 }
@@ -518,14 +517,14 @@ async fn email_mark_read(
             .and_then(|f| f.get(&account_id).cloned())
     }).unwrap_or_else(|| "INBOX".to_string());
 
-    let mut clients = state.imap_clients.lock().map_err(|e| e.to_string())?;
-
-    let client = clients
+    let mut async_clients = state.async_imap_clients.lock().await;
+    let client = async_clients
         .get_mut(&account_id)
         .ok_or_else(|| "Account not connected".to_string())?;
 
     client
         .set_read(&folder_path, uid, read)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -546,14 +545,14 @@ async fn email_mark_starred(
             .and_then(|f| f.get(&account_id).cloned())
     }).unwrap_or_else(|| "INBOX".to_string());
 
-    let mut clients = state.imap_clients.lock().map_err(|e| e.to_string())?;
-
-    let client = clients
+    let mut async_clients = state.async_imap_clients.lock().await;
+    let client = async_clients
         .get_mut(&account_id)
         .ok_or_else(|| "Account not connected".to_string())?;
 
     client
         .set_starred(&folder_path, uid, starred)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -574,14 +573,14 @@ async fn email_move(
             .and_then(|f| f.get(&account_id).cloned())
     }).unwrap_or_else(|| "INBOX".to_string());
 
-    let mut clients = state.imap_clients.lock().map_err(|e| e.to_string())?;
-
-    let client = clients
+    let mut async_clients = state.async_imap_clients.lock().await;
+    let client = async_clients
         .get_mut(&account_id)
         .ok_or_else(|| "Account not connected".to_string())?;
 
     client
         .move_email(&folder_path, uid, &target_folder)
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -602,14 +601,14 @@ async fn email_delete(
             .and_then(|f| f.get(&account_id).cloned())
     }).unwrap_or_else(|| "INBOX".to_string());
 
-    let mut clients = state.imap_clients.lock().map_err(|e| e.to_string())?;
-
-    let client = clients
+    let mut async_clients = state.async_imap_clients.lock().await;
+    let client = async_clients
         .get_mut(&account_id)
         .ok_or_else(|| "Account not connected".to_string())?;
 
     client
         .delete_email(&folder_path, uid, permanent)
+        .await
         .map_err(|e| e.to_string())
 }
 

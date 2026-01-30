@@ -12,6 +12,7 @@ interface AIReplyModalProps {
   emailContent: string;
   emailSubject: string;
   senderName: string;
+  apiKey?: string;
 }
 
 type Tone = Settings['aiReplyTone'];
@@ -23,7 +24,7 @@ const toneLabels: Record<Tone, { label: string; description: string }> = {
   casual: { label: 'Günlük', description: 'Doğal ve rahat' },
 };
 
-export function AIReplyModal({ isOpen, onClose, emailContent, emailSubject, senderName }: AIReplyModalProps) {
+export function AIReplyModal({ isOpen, onClose, emailContent, emailSubject, senderName, apiKey }: AIReplyModalProps) {
   const [tone, setTone] = useState<Tone>('professional');
   const [status, setStatus] = useState<'idle' | 'generating' | 'done' | 'error'>('idle');
   const [generatedReply, setGeneratedReply] = useState('');
@@ -33,6 +34,12 @@ export function AIReplyModal({ isOpen, onClose, emailContent, emailSubject, send
   if (!isOpen) return null;
 
   const handleGenerate = async () => {
+    if (!apiKey) {
+      setError('Gemini API anahtarı ayarlanmamış. Lütfen Ayarlar > AI bölümünden ayarlayın.');
+      setStatus('error');
+      return;
+    }
+
     setStatus('generating');
     setError('');
 
@@ -41,7 +48,7 @@ export function AIReplyModal({ isOpen, onClose, emailContent, emailSubject, send
         emailContent,
         tone,
         language: 'tr',
-      });
+      }, apiKey);
 
       setGeneratedReply(response.reply);
       setStatus('done');
