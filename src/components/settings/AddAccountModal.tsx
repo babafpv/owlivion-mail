@@ -137,41 +137,73 @@ export function AddAccountModal({
 
       setTestProgress('Hesap kaydediliyor...');
 
-      // Add account
-      const accountId = await invoke<number>('account_add', {
-        email,
-        displayName,
-        password,
-        imapHost,
-        imapPort,
-        imapSecurity,
-        smtpHost,
-        smtpPort,
-        smtpSecurity,
-        isDefault: true,
-      });
+      let resultAccount: Account;
 
-      const newAccount: Account = {
-        id: accountId,
-        email,
-        displayName,
-        imapHost,
-        imapPort,
-        imapSecurity,
-        smtpHost,
-        smtpPort,
-        smtpSecurity,
-        isActive: true,
-        isDefault: true,
-        signature: '',
-        syncDays: 30,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
+      if (editAccount) {
+        // Update existing account
+        await invoke('account_update', {
+          accountId: editAccount.id.toString(),
+          email,
+          displayName,
+          password,
+          imapHost,
+          imapPort,
+          imapSecurity,
+          smtpHost,
+          smtpPort,
+          smtpSecurity,
+          isDefault: editAccount.isDefault,
+        });
+
+        resultAccount = {
+          ...editAccount,
+          email,
+          displayName,
+          imapHost,
+          imapPort,
+          imapSecurity,
+          smtpHost,
+          smtpPort,
+          smtpSecurity,
+          updatedAt: new Date().toISOString(),
+        };
+      } else {
+        // Add new account
+        const accountId = await invoke<number>('account_add', {
+          email,
+          displayName,
+          password,
+          imapHost,
+          imapPort,
+          imapSecurity,
+          smtpHost,
+          smtpPort,
+          smtpSecurity,
+          isDefault: true,
+        });
+
+        resultAccount = {
+          id: accountId,
+          email,
+          displayName,
+          imapHost,
+          imapPort,
+          imapSecurity,
+          smtpHost,
+          smtpPort,
+          smtpSecurity,
+          isActive: true,
+          isDefault: true,
+          signature: '',
+          syncDays: 30,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+      }
 
       setStep('success');
       setTimeout(() => {
-        onAccountAdded(newAccount);
+        onAccountAdded(resultAccount);
       }, 1500);
     } catch (err: any) {
       const errorMsg = typeof err === 'string' ? err : (err.message || JSON.stringify(err));
@@ -199,6 +231,10 @@ export function AddAccountModal({
     } else if (step === 'configure') {
       if (!imapHost || !smtpHost) {
         setError('Lütfen sunucu ayarlarını doldurun');
+        return;
+      }
+      if (editAccount && !password) {
+        setError('Lütfen şifrenizi girin');
         return;
       }
       testAndAdd();
@@ -384,6 +420,25 @@ export function AddAccountModal({
             {/* Configure Step */}
             {step === 'configure' && (
               <div className="space-y-6">
+                {/* Password field for edit mode */}
+                {editAccount && (
+                  <div>
+                    <label className="block text-sm font-medium text-owl-text mb-2">
+                      Şifre (yeniden girin)
+                    </label>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full px-4 py-3 bg-owl-surface-2 border border-owl-border rounded-lg text-owl-text placeholder-owl-text-secondary focus:outline-none focus:ring-2 focus:ring-owl-accent focus:border-transparent"
+                    />
+                    <p className="mt-2 text-xs text-owl-text-secondary">
+                      Güvenlik nedeniyle şifrenizi yeniden girmeniz gerekmektedir.
+                    </p>
+                  </div>
+                )}
+
                 {/* Detected Provider */}
                 {config && (
                   <div className={`flex items-center gap-3 p-3 rounded-lg ${

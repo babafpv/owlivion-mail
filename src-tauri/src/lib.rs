@@ -615,6 +615,57 @@ async fn account_add(
     Ok(account_id.to_string())
 }
 
+/// Update an existing email account
+#[tauri::command]
+async fn account_update(
+    state: State<'_, AppState>,
+    account_id: String,
+    email: String,
+    display_name: String,
+    password: String,
+    imap_host: String,
+    imap_port: u16,
+    imap_security: String,
+    smtp_host: String,
+    smtp_port: u16,
+    smtp_security: String,
+    is_default: bool,
+) -> Result<(), String> {
+    let id: i64 = account_id.parse().map_err(|_| "Invalid account ID")?;
+    log::info!("Updating account in database: {} (ID: {})", email, id);
+
+    // Encrypt password before storage
+    let encrypted_password = crypto::encrypt_password(&password)
+        .map_err(|e| format!("Password encryption failed: {}", e))?;
+
+    let updated_account = DbNewAccount {
+        email: email.clone(),
+        display_name,
+        imap_host,
+        imap_port: imap_port as i32,
+        imap_security,
+        imap_username: Some(email.clone()),
+        smtp_host,
+        smtp_port: smtp_port as i32,
+        smtp_security,
+        smtp_username: Some(email),
+        password_encrypted: Some(encrypted_password),
+        oauth_provider: None,
+        oauth_access_token: None,
+        oauth_refresh_token: None,
+        oauth_expires_at: None,
+        is_default,
+        signature: String::new(),
+        sync_days: 30,
+    };
+
+    state.db.update_account(id, &updated_account)
+        .map_err(|e| format!("Database error: {}", e))?;
+
+    log::info!("Account updated: {}", id);
+    Ok(())
+}
+
 /// List all configured accounts
 #[tauri::command]
 async fn account_list(state: State<'_, AppState>) -> Result<Vec<db::Account>, String> {
@@ -1127,6 +1178,7 @@ pub fn run() {
             account_test_smtp,
             send_test_email,
             account_add,
+            account_update,
             account_list,
             account_connect,
             folder_list,

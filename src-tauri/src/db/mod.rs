@@ -332,6 +332,53 @@ impl Database {
         Ok(())
     }
 
+    /// Update an existing account
+    pub fn update_account(&self, id: i64, account: &NewAccount) -> DbResult<()> {
+        // SECURITY: Handle mutex poisoning gracefully
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| {
+            log::warn!("Database mutex was poisoned, recovering");
+            poisoned.into_inner()
+        });
+
+        // If this account is set as default, first remove default from all other accounts
+        if account.is_default {
+            conn.execute("UPDATE accounts SET is_default = 0 WHERE id != ?1", [id])?;
+        }
+
+        conn.execute(
+            r#"
+            UPDATE accounts SET
+                email = ?1,
+                display_name = ?2,
+                imap_host = ?3,
+                imap_port = ?4,
+                imap_security = ?5,
+                smtp_host = ?6,
+                smtp_port = ?7,
+                smtp_security = ?8,
+                password_encrypted = ?9,
+                is_default = ?10,
+                updated_at = datetime('now')
+            WHERE id = ?11
+            "#,
+            params![
+                account.email,
+                account.display_name,
+                account.imap_host,
+                account.imap_port,
+                account.imap_security,
+                account.smtp_host,
+                account.smtp_port,
+                account.smtp_security,
+                account.password_encrypted,
+                account.is_default,
+                id,
+            ],
+        )?;
+
+        Ok(())
+    }
+
     // =========================================================================
     // FOLDERS
     // =========================================================================
