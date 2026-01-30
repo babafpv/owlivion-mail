@@ -7,7 +7,7 @@ use crate::mail::{
     EmailSummary, FetchResult, Folder, FolderType, MailError, MailResult, ParsedEmail, EmailAttachment,
 };
 use async_imap::Session;
-use futures::StreamExt;
+use futures::{pin_mut, StreamExt};
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
 /// Decode MIME encoded header (RFC 2047)
@@ -562,11 +562,15 @@ impl AsyncImapClient {
             while let Some(_) = stream.next().await {}
         } // stream is dropped here
 
-        // Expunge deleted messages
-        session
-            .expunge()
-            .await
-            .map_err(|e| MailError::Imap(e.to_string()))?;
+        // Expunge deleted messages and consume the stream
+        {
+            let expunge_stream = session
+                .expunge()
+                .await
+                .map_err(|e| MailError::Imap(e.to_string()))?;
+            pin_mut!(expunge_stream);
+            while let Some(_) = expunge_stream.next().await {}
+        }
 
         Ok(())
     }
@@ -592,11 +596,15 @@ impl AsyncImapClient {
                 while let Some(_) = stream.next().await {}
             } // stream is dropped here
 
-            // Expunge
-            session
-                .expunge()
-                .await
-                .map_err(|e| MailError::Imap(e.to_string()))?;
+            // Expunge and consume the stream
+            {
+                let expunge_stream = session
+                    .expunge()
+                    .await
+                    .map_err(|e| MailError::Imap(e.to_string()))?;
+                pin_mut!(expunge_stream);
+                while let Some(_) = expunge_stream.next().await {}
+            }
         } else {
             // Move to Trash folder - try common trash folder names
             let trash_folders = ["Trash", "[Gmail]/Trash", "Deleted Items", "Deleted"];
@@ -613,11 +621,15 @@ impl AsyncImapClient {
                         while let Some(_) = stream.next().await {}
                     } // stream is dropped here
 
-                    // Expunge
-                    session
-                        .expunge()
-                        .await
-                        .map_err(|e| MailError::Imap(e.to_string()))?;
+                    // Expunge and consume the stream
+                    {
+                        let expunge_stream = session
+                            .expunge()
+                            .await
+                            .map_err(|e| MailError::Imap(e.to_string()))?;
+                        pin_mut!(expunge_stream);
+                        while let Some(_) = expunge_stream.next().await {}
+                    }
 
                     moved = true;
                     break;

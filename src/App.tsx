@@ -1689,16 +1689,19 @@ function App() {
     if (selectedEmail && selectedAccountId) {
       const email = emails.find(e => e.id === selectedEmail);
       if (email && !email.read) {
+        const emailIdToMark = selectedEmail;
         const timeoutId = setTimeout(async () => {
           // Optimistic update
-          setEmails(prev => prev.map(e => e.id === selectedEmail ? { ...e, read: true } : e));
+          setEmails(prev => prev.map(e => e.id === emailIdToMark ? { ...e, read: true } : e));
 
           // Call backend
           try {
             const { markEmailRead } = await import('./services/mailService');
-            await markEmailRead(selectedAccountId.toString(), parseInt(selectedEmail), true, activeFolder);
+            await markEmailRead(selectedAccountId.toString(), parseInt(emailIdToMark), true, activeFolder);
           } catch (err) {
             console.error('Failed to mark as read:', err);
+            // Revert optimistic update on failure
+            setEmails(prev => prev.map(e => e.id === emailIdToMark ? { ...e, read: false } : e));
           }
         }, 2000);
 

@@ -2,6 +2,7 @@
 //!
 //! A modern, AI-powered email client built with Tauri and React.
 
+pub mod crypto;
 pub mod db;
 pub mod mail;
 
@@ -57,7 +58,6 @@ pub struct StoredAccount {
 /// Application state for managing accounts and connections
 pub struct AppState {
     db: Arc<Database>,
-    imap_clients: Mutex<HashMap<String, ImapClient>>,
     async_imap_clients: tokio::sync::Mutex<HashMap<String, AsyncImapClient>>,
     current_folder: Mutex<HashMap<String, String>>,
 }
@@ -66,7 +66,6 @@ impl AppState {
     pub fn new(db: Database) -> Self {
         Self {
             db: Arc::new(db),
-            imap_clients: Mutex::new(HashMap::new()),
             async_imap_clients: tokio::sync::Mutex::new(HashMap::new()),
             current_folder: Mutex::new(HashMap::new()),
         }
@@ -287,6 +286,10 @@ async fn account_add(
 ) -> Result<String, String> {
     log::info!("Adding account to database: {}", email);
 
+    // Encrypt password before storage
+    let encrypted_password = crypto::encrypt_password(&password)
+        .map_err(|e| format!("Password encryption failed: {}", e))?;
+
     let new_account = DbNewAccount {
         email: email.clone(),
         display_name,
@@ -298,7 +301,7 @@ async fn account_add(
         smtp_port: smtp_port as i32,
         smtp_security,
         smtp_username: Some(email),
-        password_encrypted: Some(password), // TODO: encrypt password
+        password_encrypted: Some(encrypted_password),
         oauth_provider: None,
         oauth_access_token: None,
         oauth_refresh_token: None,
@@ -334,9 +337,13 @@ async fn account_connect(state: State<'_, AppState>, account_id: String) -> Resu
     let account = state.db.get_account(id)
         .map_err(|e| format!("Database error: {}", e))?;
 
-    let password = state.db.get_account_password(id)
+    let encrypted_password = state.db.get_account_password(id)
         .map_err(|e| format!("Database error: {}", e))?
         .ok_or_else(|| "No password stored".to_string())?;
+
+    // Decrypt password
+    let password = crypto::decrypt_password(&encrypted_password)
+        .map_err(|e| format!("Password decryption failed: {}", e))?;
 
     let config = ImapConfig {
         host: account.imap_host.clone(),
@@ -433,9 +440,13 @@ async fn email_get(
     let account_id_num: i64 = account_id.parse().map_err(|_| "Invalid account ID")?;
     let account = state.db.get_account(account_id_num)
         .map_err(|e| format!("Failed to get account: {}", e))?;
-    let password = state.db.get_account_password(account_id_num)
+    let encrypted_password = state.db.get_account_password(account_id_num)
         .map_err(|e| format!("Failed to get password: {}", e))?
         .ok_or_else(|| "No password found for account".to_string())?;
+
+    // Decrypt password
+    let password = crypto::decrypt_password(&encrypted_password)
+        .map_err(|e| format!("Password decryption failed: {}", e))?;
 
     // Parse security type
     let security = match account.imap_security.to_uppercase().as_str() {
@@ -629,9 +640,13 @@ async fn email_send(
     let account = state.db.get_account(id)
         .map_err(|e| format!("Database error: {}", e))?;
 
-    let password = state.db.get_account_password(id)
+    let encrypted_password = state.db.get_account_password(id)
         .map_err(|e| format!("Database error: {}", e))?
         .ok_or_else(|| "No password stored".to_string())?;
+
+    // Decrypt password
+    let password = crypto::decrypt_password(&encrypted_password)
+        .map_err(|e| format!("Password decryption failed: {}", e))?;
 
     log::info!("Sending email from {} to {:?}", account.email, to);
 
