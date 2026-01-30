@@ -389,6 +389,575 @@ ${request.emailContent}
 ${request.language === 'tr' ? 'Yanıt' : 'Reply'}:`;
 }
 
+// ============================================================================
+// Phishing Detection
+// ============================================================================
+
+export interface PhishingAnalysis {
+  isPhishing: boolean;
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  score: number; // 0-100
+  reasons: string[];
+  recommendations: string[];
+}
+
+/**
+ * Analyze email for phishing indicators using AI
+ */
+export async function analyzePhishing(
+  email: {
+    from: { name: string; email: string };
+    subject: string;
+    body: string;
+    bodyHtml?: string;
+  },
+  language: 'tr' | 'en' = 'tr',
+  apiKey?: string
+): Promise<PhishingAnalysis> {
+  if (!apiKey) {
+    // Fall back to rule-based detection if no API key
+    return ruleBasedPhishingDetection(email, language);
+  }
+
+  try {
+    // SECURITY: Sanitize email content
+    const sanitizedBody = sanitizeEmailContent(email.body, 8000);
+
+    // Extract links from HTML for analysis
+    const links = extractLinks(email.bodyHtml || email.body);
+
+    const prompt = language === 'tr'
+      ? `Sen bir siber güvenlik uzmanısın. Bu e-postayı phishing (oltalama) saldırısı açısından analiz et.
+
+Gönderen: ${email.from.name} <${email.from.email}>
+Konu: ${email.subject}
+İçerik:
+${sanitizedBody}
+
+${links.length > 0 ? `Bulunan Linkler:\n${links.slice(0, 10).map(l => `- ${l}`).join('\n')}` : ''}
+
+Analiz kriterleri:
+1. Gönderen adı ile e-posta adresi uyumsuzluğu
+2. Şüpheli veya gizlenmiş linkler
+3. Aciliyet yaratan dil ("hesabınız kapatılacak", "hemen tıklayın")
+4. Kişisel bilgi talepleri (şifre, kredi kartı, TC kimlik)
+5. Dilbilgisi ve yazım hataları
+6. Resmi kurum taklidi
+7. Tehdit içeren ifadeler
+8. Beklenmedik ekler
+
+JSON formatında yanıt ver (sadece JSON, açıklama yok):
+{
+  "isPhishing": boolean,
+  "riskLevel": "low" | "medium" | "high" | "critical",
+  "score": 0-100,
+  "reasons": ["sebep1", "sebep2"],
+  "recommendations": ["öneri1", "öneri2"]
+}`
+      : `You are a cybersecurity expert. Analyze this email for phishing indicators.
+
+From: ${email.from.name} <${email.from.email}>
+Subject: ${email.subject}
+Content:
+${sanitizedBody}
+
+${links.length > 0 ? `Links found:\n${links.slice(0, 10).map(l => `- ${l}`).join('\n')}` : ''}
+
+Analysis criteria:
+1. Sender name vs email address mismatch
+2. Suspicious or obfuscated links
+3. Urgency language ("account will be closed", "click immediately")
+4. Requests for personal info (passwords, credit cards, SSN)
+5. Grammar and spelling errors
+6. Impersonation of official organizations
+7. Threatening statements
+8. Unexpected attachments
+
+Respond in JSON format only (no explanation):
+{
+  "isPhishing": boolean,
+  "riskLevel": "low" | "medium" | "high" | "critical",
+  "score": 0-100,
+  "reasons": ["reason1", "reason2"],
+  "recommendations": ["recommendation1", "recommendation2"]
+}`;
+
+    const response = await makeGeminiRequest(apiKey, {
+      contents: [
+        {
+          parts: [{ text: prompt }],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 512,
+      },
+    });
+
+    if (!response.ok) {
+      // Fall back to rule-based on API error
+      return ruleBasedPhishingDetection(email, language);
+    }
+
+    const data = await response.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+
+    // Parse JSON response
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const result = JSON.parse(jsonMatch[0]);
+      return {
+        isPhishing: result.isPhishing ?? false,
+        riskLevel: result.riskLevel ?? 'low',
+        score: Math.min(100, Math.max(0, result.score ?? 0)),
+        reasons: result.reasons ?? [],
+        recommendations: result.recommendations ?? [],
+      };
+    }
+
+    return ruleBasedPhishingDetection(email, language);
+  } catch {
+    // Fall back to rule-based on any error
+    return ruleBasedPhishingDetection(email, language);
+  }
+}
+
+/**
+ * Extract links from email content
+ */
+function extractLinks(content: string): string[] {
+  const linkRegex = /https?:\/\/[^\s<>"']+/gi;
+  const matches = content.match(linkRegex) || [];
+  return [...new Set(matches)];
+}
+
+/**
+ * Rule-based phishing detection (fallback when AI unavailable)
+ */
+function ruleBasedPhishingDetection(
+  email: {
+    from: { name: string; email: string };
+    subject: string;
+    body: string;
+    bodyHtml?: string;
+  },
+  language: 'tr' | 'en'
+): PhishingAnalysis {
+  const reasons: string[] = [];
+  let score = 0;
+  const content = (email.body + ' ' + email.subject).toLowerCase();
+  const fromEmail = email.from.email.toLowerCase();
+  const fromName = email.from.name.toLowerCase();
+
+  // 1. Sender mismatch detection
+  const knownBrands = ['paypal', 'amazon', 'microsoft', 'apple', 'google', 'facebook', 'netflix', 'bank', 'instagram', 'whatsapp', 'telegram'];
+  for (const brand of knownBrands) {
+    if (fromName.includes(brand) && !fromEmail.includes(brand)) {
+      score += 30;
+      reasons.push(language === 'tr'
+        ? `Gönderen adı "${brand}" içeriyor ama e-posta adresi içermiyor`
+        : `Sender name contains "${brand}" but email address doesn't`);
+    }
+  }
+
+  // 2. Suspicious domains
+  const suspiciousTlds = ['.xyz', '.top', '.click', '.link', '.info', '.tk', '.ml', '.ga', '.cf', '.gq'];
+  for (const tld of suspiciousTlds) {
+    if (fromEmail.endsWith(tld)) {
+      score += 20;
+      reasons.push(language === 'tr'
+        ? `Şüpheli alan adı uzantısı: ${tld}`
+        : `Suspicious domain extension: ${tld}`);
+    }
+  }
+
+  // 3. Urgency keywords
+  const urgencyKeywords = language === 'tr'
+    ? ['acil', 'hemen', 'şimdi', 'son şans', 'hesabınız kapatılacak', 'askıya alındı', '24 saat', '48 saat', 'derhal']
+    : ['urgent', 'immediately', 'act now', 'last chance', 'suspended', 'closed', '24 hours', '48 hours', 'verify now'];
+
+  for (const keyword of urgencyKeywords) {
+    if (content.includes(keyword)) {
+      score += 10;
+      reasons.push(language === 'tr'
+        ? `Aciliyet yaratan ifade: "${keyword}"`
+        : `Urgency phrase detected: "${keyword}"`);
+      break; // Only count once
+    }
+  }
+
+  // 4. Sensitive info requests
+  const sensitiveKeywords = language === 'tr'
+    ? ['şifre', 'parola', 'kredi kartı', 'kart numarası', 'cvv', 'tc kimlik', 'banka hesabı', 'iban', 'pin kod']
+    : ['password', 'credit card', 'card number', 'cvv', 'ssn', 'social security', 'bank account', 'iban', 'pin'];
+
+  for (const keyword of sensitiveKeywords) {
+    if (content.includes(keyword)) {
+      score += 15;
+      reasons.push(language === 'tr'
+        ? `Hassas bilgi talebi: "${keyword}"`
+        : `Sensitive info request: "${keyword}"`);
+      break;
+    }
+  }
+
+  // 5. Suspicious links in HTML
+  const links = extractLinks(email.bodyHtml || email.body);
+  for (const link of links) {
+    // Check for IP address URLs
+    if (/https?:\/\/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(link)) {
+      score += 25;
+      reasons.push(language === 'tr'
+        ? 'IP adresi içeren şüpheli link tespit edildi'
+        : 'Suspicious link with IP address detected');
+      break;
+    }
+    // Check for URL shorteners
+    const shorteners = ['bit.ly', 'tinyurl', 'goo.gl', 't.co', 'ow.ly', 'is.gd', 'buff.ly'];
+    for (const shortener of shorteners) {
+      if (link.includes(shortener)) {
+        score += 15;
+        reasons.push(language === 'tr'
+          ? `Kısaltılmış link tespit edildi: ${shortener}`
+          : `Shortened link detected: ${shortener}`);
+        break;
+      }
+    }
+  }
+
+  // 6. Too good to be true
+  const scamKeywords = language === 'tr'
+    ? ['kazandınız', 'ödül', 'piyango', 'miras', 'milyon dolar', 'ücretsiz', 'hediye']
+    : ['you won', 'winner', 'lottery', 'inheritance', 'million dollars', 'free gift', 'prize'];
+
+  for (const keyword of scamKeywords) {
+    if (content.includes(keyword)) {
+      score += 20;
+      reasons.push(language === 'tr'
+        ? `Dolandırıcılık göstergesi: "${keyword}"`
+        : `Scam indicator: "${keyword}"`);
+      break;
+    }
+  }
+
+  // Determine risk level
+  let riskLevel: PhishingAnalysis['riskLevel'];
+  if (score >= 60) riskLevel = 'critical';
+  else if (score >= 40) riskLevel = 'high';
+  else if (score >= 20) riskLevel = 'medium';
+  else riskLevel = 'low';
+
+  // Generate recommendations
+  const recommendations: string[] = [];
+  if (score >= 20) {
+    if (language === 'tr') {
+      recommendations.push('Bu e-postadaki linklere tıklamayın');
+      recommendations.push('Şüpheli göndericiyi doğrulamadan bilgi paylaşmayın');
+      if (score >= 40) {
+        recommendations.push('Bu e-postayı spam olarak işaretleyin');
+        recommendations.push('Eğer bir hesap sorunuysa, doğrudan resmi web sitesine gidin');
+      }
+    } else {
+      recommendations.push('Do not click links in this email');
+      recommendations.push('Do not share information without verifying the sender');
+      if (score >= 40) {
+        recommendations.push('Mark this email as spam');
+        recommendations.push('If it\'s about an account issue, go directly to the official website');
+      }
+    }
+  }
+
+  return {
+    isPhishing: score >= 40,
+    riskLevel,
+    score: Math.min(100, score),
+    reasons,
+    recommendations,
+  };
+}
+
+// ============================================================================
+// Email Tracking Detection
+// ============================================================================
+
+export interface TrackingAnalysis {
+  hasTracking: boolean;
+  isMarketingEmail: boolean;
+  trackingPixels: TrackingPixel[];
+  trackingLinks: string[];
+  trackingServices: string[];
+  recommendations: string[];
+}
+
+export interface TrackingPixel {
+  url: string;
+  service: string;
+  type: 'pixel' | 'beacon' | 'image';
+}
+
+// Known email tracking/marketing services
+const TRACKING_DOMAINS: Record<string, string> = {
+  // Email Service Providers
+  'mailchimp.com': 'Mailchimp',
+  'list-manage.com': 'Mailchimp',
+  'mailchi.mp': 'Mailchimp',
+  'sendgrid.net': 'SendGrid',
+  'sendgrid.com': 'SendGrid',
+  'hubspot.com': 'HubSpot',
+  'hs-analytics.net': 'HubSpot',
+  'hubspotemail.net': 'HubSpot',
+  'constantcontact.com': 'Constant Contact',
+  'ctctcdn.com': 'Constant Contact',
+  'mailgun.org': 'Mailgun',
+  'mailgun.com': 'Mailgun',
+  'amazonses.com': 'Amazon SES',
+  'awstrack.me': 'Amazon SES',
+  'sendinblue.com': 'Sendinblue',
+  'sibforms.com': 'Sendinblue',
+  'getresponse.com': 'GetResponse',
+  'activecampaign.com': 'ActiveCampaign',
+  'klaviyo.com': 'Klaviyo',
+  'drip.com': 'Drip',
+  'convertkit.com': 'ConvertKit',
+  'moosend.com': 'Moosend',
+  'omnisend.com': 'Omnisend',
+  'mailerlite.com': 'MailerLite',
+  'campaignmonitor.com': 'Campaign Monitor',
+  'cmail19.com': 'Campaign Monitor',
+  'cmail20.com': 'Campaign Monitor',
+  'postmarkapp.com': 'Postmark',
+  'intercom.io': 'Intercom',
+  'intercomcdn.com': 'Intercom',
+  'mixmax.com': 'Mixmax',
+  'yesware.com': 'Yesware',
+  'mailtrack.io': 'Mailtrack',
+  'streak.com': 'Streak',
+  'bananatag.com': 'Bananatag',
+  'cirrusinsight.com': 'Cirrus Insight',
+  'salesloft.com': 'SalesLoft',
+  'outreach.io': 'Outreach',
+  'reply.io': 'Reply.io',
+  'lemlist.com': 'Lemlist',
+  'woodpecker.co': 'Woodpecker',
+
+  // Analytics & Tracking
+  'google-analytics.com': 'Google Analytics',
+  'doubleclick.net': 'Google Ads',
+  'googleadservices.com': 'Google Ads',
+  'facebook.com/tr': 'Facebook Pixel',
+  'pixel.facebook.com': 'Facebook Pixel',
+  'ads.linkedin.com': 'LinkedIn Ads',
+  'px.ads.linkedin.com': 'LinkedIn Pixel',
+  'twitter.com/i/adsct': 'Twitter Ads',
+  't.co': 'Twitter',
+
+  // Turkish Marketing Services
+  'euromsg.com': 'Euromessage',
+  'emarsys.net': 'Emarsys',
+  'iletimerkezi.com': 'İleti Merkezi',
+  'netgsm.com.tr': 'Netgsm',
+
+  // Other Tracking
+  'litmus.com': 'Litmus',
+  'emailonacid.com': 'Email on Acid',
+  'returnpath.net': 'Return Path',
+  'validity.com': 'Validity',
+  'sparkpost.com': 'SparkPost',
+  'mandrillapp.com': 'Mandrill',
+  'exacttarget.com': 'Salesforce Marketing',
+  'sfmc-content.com': 'Salesforce Marketing',
+  'pardot.com': 'Pardot',
+  'marketo.com': 'Marketo',
+  'mktocdn.com': 'Marketo',
+  'eloqua.com': 'Oracle Eloqua',
+  'braze.com': 'Braze',
+  'iterable.com': 'Iterable',
+  'customer.io': 'Customer.io',
+  'sailthru.com': 'Sailthru',
+  'responsys.net': 'Oracle Responsys',
+  'cheetahmail.com': 'Cheetah Digital',
+  'experian.com': 'Experian',
+  'acxiom.com': 'Acxiom',
+  'bluekai.com': 'Oracle BlueKai',
+  'krxd.net': 'Krux',
+  'demdex.net': 'Adobe Audience Manager',
+  'omtrdc.net': 'Adobe Analytics',
+};
+
+/**
+ * Detect email tracking and marketing indicators
+ */
+export function detectEmailTracking(bodyHtml: string): TrackingAnalysis {
+  const trackingPixels: TrackingPixel[] = [];
+  const trackingLinks: string[] = [];
+  const trackingServicesSet = new Set<string>();
+  const recommendations: string[] = [];
+
+  if (!bodyHtml) {
+    return {
+      hasTracking: false,
+      isMarketingEmail: false,
+      trackingPixels: [],
+      trackingLinks: [],
+      trackingServices: [],
+      recommendations: [],
+    };
+  }
+
+  const htmlLower = bodyHtml.toLowerCase();
+
+  // 1. Detect tracking pixels (1x1 images or very small images)
+  const imgRegex = /<img[^>]*>/gi;
+  const imgMatches = bodyHtml.match(imgRegex) || [];
+
+  for (const img of imgMatches) {
+    const srcMatch = img.match(/src=["']([^"']+)["']/i);
+    const widthMatch = img.match(/width=["']?(\d+)/i);
+    const heightMatch = img.match(/height=["']?(\d+)/i);
+    const styleMatch = img.match(/style=["']([^"']+)["']/i);
+
+    if (srcMatch) {
+      const src = srcMatch[1];
+      const width = widthMatch ? parseInt(widthMatch[1]) : null;
+      const height = heightMatch ? parseInt(heightMatch[1]) : null;
+
+      // Check for tiny images (tracking pixels)
+      const isTinyImage = (width !== null && width <= 3) || (height !== null && height <= 3);
+
+      // Check for hidden images via style
+      const isHidden = styleMatch && (
+        styleMatch[1].includes('display:none') ||
+        styleMatch[1].includes('display: none') ||
+        styleMatch[1].includes('visibility:hidden') ||
+        styleMatch[1].includes('opacity:0') ||
+        (styleMatch[1].includes('width:1') || styleMatch[1].includes('width: 1')) ||
+        (styleMatch[1].includes('height:1') || styleMatch[1].includes('height: 1'))
+      );
+
+      // Check if URL matches known tracking domains
+      const service = getTrackingService(src);
+
+      if (isTinyImage || isHidden || service) {
+        trackingPixels.push({
+          url: src,
+          service: service || 'Unknown',
+          type: (isTinyImage || isHidden) ? 'pixel' : 'beacon',
+        });
+        if (service) {
+          trackingServicesSet.add(service);
+        }
+      }
+    }
+  }
+
+  // 2. Detect tracking links
+  const linkRegex = /href=["']([^"']+)["']/gi;
+  let linkMatch;
+  while ((linkMatch = linkRegex.exec(bodyHtml)) !== null) {
+    const url = linkMatch[1];
+    const service = getTrackingService(url);
+
+    if (service) {
+      trackingLinks.push(url);
+      trackingServicesSet.add(service);
+    }
+
+    // Check for click tracking patterns
+    if (
+      url.includes('/track/') ||
+      url.includes('/click/') ||
+      url.includes('/c/') ||
+      url.includes('?utm_') ||
+      url.includes('&utm_') ||
+      url.includes('/redirect/') ||
+      url.includes('/r/') ||
+      url.includes('/l/') ||
+      url.includes('click.') ||
+      url.includes('track.') ||
+      url.includes('email.') ||
+      url.includes('links.') ||
+      url.includes('go.') ||
+      url.includes('open.')
+    ) {
+      if (!trackingLinks.includes(url)) {
+        trackingLinks.push(url);
+      }
+    }
+  }
+
+  // 3. Detect marketing email indicators
+  const marketingIndicators = [
+    'unsubscribe',
+    'abonelikten çık',
+    'aboneliği iptal',
+    'listeden çık',
+    'tercihlerinizi yönet',
+    'manage preferences',
+    'email preferences',
+    'opt-out',
+    'opt out',
+    'view in browser',
+    'tarayıcıda görüntüle',
+    'web versiyonu',
+    'privacy policy',
+    'gizlilik politikası',
+    '© 20', // Copyright year
+    'all rights reserved',
+    'tüm hakları saklıdır',
+  ];
+
+  let marketingScore = 0;
+  for (const indicator of marketingIndicators) {
+    if (htmlLower.includes(indicator)) {
+      marketingScore++;
+    }
+  }
+
+  const isMarketingEmail = marketingScore >= 2 || trackingServicesSet.size > 0;
+  const hasTracking = trackingPixels.length > 0 || trackingLinks.length > 0;
+
+  // Generate recommendations
+  if (hasTracking) {
+    recommendations.push('Bu e-posta okundu bildirimi gönderen takip pikselleri içeriyor');
+    recommendations.push('Resimleri yüklememeniz takip edilmenizi önler');
+  }
+
+  if (isMarketingEmail) {
+    recommendations.push('Bu bir pazarlama/bülten e-postası olarak görünüyor');
+    if (htmlLower.includes('unsubscribe') || htmlLower.includes('abonelik')) {
+      recommendations.push('İstemiyorsanız abonelikten çıkabilirsiniz');
+    }
+  }
+
+  if (trackingServicesSet.size > 0) {
+    recommendations.push(`Tespit edilen servisler: ${Array.from(trackingServicesSet).join(', ')}`);
+  }
+
+  return {
+    hasTracking,
+    isMarketingEmail,
+    trackingPixels,
+    trackingLinks: [...new Set(trackingLinks)].slice(0, 10), // Limit to 10
+    trackingServices: Array.from(trackingServicesSet),
+    recommendations,
+  };
+}
+
+/**
+ * Get tracking service name from URL
+ */
+function getTrackingService(url: string): string | null {
+  const urlLower = url.toLowerCase();
+
+  for (const [domain, service] of Object.entries(TRACKING_DOMAINS)) {
+    if (urlLower.includes(domain)) {
+      return service;
+    }
+  }
+
+  return null;
+}
+
 /**
  * Test API connection
  */

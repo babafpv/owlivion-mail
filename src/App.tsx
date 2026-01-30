@@ -8,7 +8,7 @@ import { Compose } from "./components/Compose";
 import { ShortcutsHelp } from "./components/ShortcutsHelp";
 import { Welcome } from "./components/Welcome";
 import { AddAccountModal } from "./components/settings/AddAccountModal";
-import { summarizeEmail } from "./services/geminiService";
+import { summarizeEmail, analyzePhishing, detectEmailTracking, type PhishingAnalysis, type TrackingAnalysis } from "./services/geminiService";
 import { requestNotificationPermission, showNewEmailNotification, playNotificationSound } from "./services/notificationService";
 import type { DraftEmail, EmailAddress, Account, ImapFolder } from "./types";
 
@@ -647,6 +647,9 @@ function EmailView({
   summary,
   onSummarize,
   isSummarizing,
+  phishingAnalysis,
+  isAnalyzingPhishing,
+  trackingAnalysis,
 }: {
   email: Email | null;
   showImages: boolean;
@@ -664,6 +667,9 @@ function EmailView({
   summary: string | null;
   onSummarize: () => void;
   isSummarizing: boolean;
+  phishingAnalysis: PhishingAnalysis | null;
+  isAnalyzingPhishing: boolean;
+  trackingAnalysis: TrackingAnalysis | null;
 }) {
   const [showSummary, setShowSummary] = useState(false);
 
@@ -756,6 +762,133 @@ function EmailView({
               Her Zaman Göster
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Phishing Warning Banner */}
+      {(isAnalyzingPhishing || (phishingAnalysis && phishingAnalysis.score >= 20)) && (
+        <div className={`mx-4 mt-4 p-4 rounded-lg border ${
+          isAnalyzingPhishing ? 'bg-owl-surface border-owl-border' :
+          phishingAnalysis?.riskLevel === 'critical' ? 'bg-red-500/20 border-red-500/50' :
+          phishingAnalysis?.riskLevel === 'high' ? 'bg-orange-500/20 border-orange-500/50' :
+          phishingAnalysis?.riskLevel === 'medium' ? 'bg-yellow-500/20 border-yellow-500/50' :
+          'bg-owl-surface border-owl-border'
+        }`}>
+          {isAnalyzingPhishing ? (
+            <div className="flex items-center gap-3">
+              <svg className="w-5 h-5 animate-spin text-owl-accent" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <span className="text-owl-text-secondary">Phishing analizi yapılıyor...</span>
+            </div>
+          ) : phishingAnalysis && (
+            <div>
+              <div className="flex items-center gap-3 mb-2">
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                  phishingAnalysis.riskLevel === 'critical' ? 'bg-red-500/30 text-red-400' :
+                  phishingAnalysis.riskLevel === 'high' ? 'bg-orange-500/30 text-orange-400' :
+                  phishingAnalysis.riskLevel === 'medium' ? 'bg-yellow-500/30 text-yellow-400' :
+                  'bg-owl-surface-2 text-owl-text-secondary'
+                }`}>
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <div>
+                  <p className={`font-medium ${
+                    phishingAnalysis.riskLevel === 'critical' ? 'text-red-400' :
+                    phishingAnalysis.riskLevel === 'high' ? 'text-orange-400' :
+                    phishingAnalysis.riskLevel === 'medium' ? 'text-yellow-400' :
+                    'text-owl-text'
+                  }`}>
+                    {phishingAnalysis.riskLevel === 'critical' ? '⚠️ Kritik Phishing Riski!' :
+                     phishingAnalysis.riskLevel === 'high' ? '⚠️ Yüksek Phishing Riski' :
+                     phishingAnalysis.riskLevel === 'medium' ? '⚠️ Orta Seviye Risk' :
+                     'ℹ️ Dikkat'}
+                  </p>
+                  <p className="text-xs text-owl-text-secondary">Risk skoru: {phishingAnalysis.score}/100</p>
+                </div>
+              </div>
+              {phishingAnalysis.reasons.length > 0 && (
+                <div className="mt-3 space-y-1">
+                  <p className="text-xs font-medium text-owl-text-secondary uppercase">Tespit edilen göstergeler:</p>
+                  <ul className="text-sm text-owl-text space-y-1">
+                    {phishingAnalysis.reasons.slice(0, 4).map((reason, i) => (
+                      <li key={i} className="flex items-start gap-2">
+                        <span className="text-owl-warning mt-0.5">•</span>
+                        {reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {phishingAnalysis.recommendations.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-owl-border/50">
+                  <p className="text-xs font-medium text-owl-text-secondary uppercase mb-1">Öneriler:</p>
+                  <ul className="text-sm text-owl-text space-y-1">
+                    {phishingAnalysis.recommendations.slice(0, 3).map((rec, i) => (
+                      <li key={i} className="flex items-start gap-2">
+                        <span className="text-owl-accent mt-0.5">→</span>
+                        {rec}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Email Tracking Warning Banner */}
+      {trackingAnalysis && trackingAnalysis.hasTracking && (
+        <div className="mx-4 mt-4 p-4 bg-purple-500/10 border border-purple-500/30 rounded-lg">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-10 h-10 bg-purple-500/20 rounded-lg flex items-center justify-center text-purple-400">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+              </svg>
+            </div>
+            <div>
+              <p className="font-medium text-purple-400">
+                {trackingAnalysis.isMarketingEmail ? '📧 Pazarlama E-postası' : '👁️ Takip Tespiti'}
+              </p>
+              <p className="text-xs text-owl-text-secondary">
+                {trackingAnalysis.trackingPixels.length > 0 && `${trackingAnalysis.trackingPixels.length} takip pikseli`}
+                {trackingAnalysis.trackingPixels.length > 0 && trackingAnalysis.trackingLinks.length > 0 && ' • '}
+                {trackingAnalysis.trackingLinks.length > 0 && `${trackingAnalysis.trackingLinks.length} takip linki`}
+              </p>
+            </div>
+          </div>
+          {trackingAnalysis.trackingServices.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {trackingAnalysis.trackingServices.map((service, i) => (
+                <span key={i} className="text-xs px-2 py-0.5 bg-purple-500/20 text-purple-300 rounded-full">
+                  {service}
+                </span>
+              ))}
+            </div>
+          )}
+          {trackingAnalysis.recommendations.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-purple-500/20">
+              <ul className="text-sm text-owl-text space-y-1">
+                {trackingAnalysis.recommendations.slice(0, 3).map((rec, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className="text-purple-400 mt-0.5">•</span>
+                    {rec}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {!shouldShowImages && trackingAnalysis.trackingPixels.length > 0 && (
+            <div className="mt-3 px-3 py-2 bg-owl-success/10 rounded text-sm text-owl-success flex items-center gap-2">
+              <Icons.ShieldCheck />
+              Resimler gizli - okundu bildirimi gönderilmedi
+            </div>
+          )}
         </div>
       )}
 
@@ -1380,6 +1513,9 @@ function App() {
   const [summaries, setSummaries] = useState<Record<string, string>>({});
   const [summarizingId, setSummarizingId] = useState<string | null>(null);
   const [fetchedEmailIds, setFetchedEmailIds] = useState<Set<string>>(new Set());
+  const [phishingResults, setPhishingResults] = useState<Record<string, PhishingAnalysis>>({});
+  const [analyzingPhishingId, setAnalyzingPhishingId] = useState<string | null>(null);
+  const [trackingResults, setTrackingResults] = useState<Record<string, TrackingAnalysis>>({});
 
   // Check if user has any accounts configured
   const hasAccounts = accounts.length > 0;
@@ -1449,6 +1585,61 @@ function App() {
     }
     return result;
   }, [emails, activeFolder, searchQuery]);
+
+  // Auto-analyze phishing when email is selected
+  useEffect(() => {
+    if (!currentEmail || !currentEmail.id) return;
+    // Skip if already analyzed
+    if (phishingResults[currentEmail.id]) return;
+    // Skip if currently analyzing
+    if (analyzingPhishingId === currentEmail.id) return;
+
+    const analyzeEmail = async () => {
+      setAnalyzingPhishingId(currentEmail.id);
+      try {
+        const result = await analyzePhishing(
+          {
+            from: currentEmail.from,
+            subject: currentEmail.subject,
+            body: currentEmail.body,
+            bodyHtml: currentEmail.bodyHtml,
+          },
+          'tr',
+          geminiApiKey || undefined
+        );
+        setPhishingResults(prev => ({ ...prev, [currentEmail.id]: result }));
+      } catch (err) {
+        console.error('Phishing analysis failed:', err);
+        // On error, set a default low-risk result
+        setPhishingResults(prev => ({
+          ...prev,
+          [currentEmail.id]: {
+            isPhishing: false,
+            riskLevel: 'low',
+            score: 0,
+            reasons: [],
+            recommendations: [],
+          },
+        }));
+      } finally {
+        setAnalyzingPhishingId(null);
+      }
+    };
+
+    analyzeEmail();
+  }, [currentEmail?.id, currentEmail?.from, currentEmail?.subject, currentEmail?.body, currentEmail?.bodyHtml, phishingResults, analyzingPhishingId, geminiApiKey]);
+
+  // Auto-detect tracking when email is selected
+  useEffect(() => {
+    if (!currentEmail || !currentEmail.id) return;
+    // Skip if already analyzed
+    if (trackingResults[currentEmail.id]) return;
+    // Only analyze if email has HTML content
+    if (!currentEmail.bodyHtml) return;
+
+    const result = detectEmailTracking(currentEmail.bodyHtml);
+    setTrackingResults(prev => ({ ...prev, [currentEmail.id]: result }));
+  }, [currentEmail?.id, currentEmail?.bodyHtml, trackingResults]);
 
   // Email actions
   const handleToggleStar = useCallback(async (emailId?: string) => {
@@ -1810,6 +2001,9 @@ function App() {
         summary={selectedEmail ? summaries[selectedEmail] || null : null}
         onSummarize={handleSummarize}
         isSummarizing={summarizingId === selectedEmail}
+        phishingAnalysis={selectedEmail ? phishingResults[selectedEmail] || null : null}
+        isAnalyzingPhishing={analyzingPhishingId === selectedEmail}
+        trackingAnalysis={selectedEmail ? trackingResults[selectedEmail] || null : null}
       />
 
       {/* Modals */}
