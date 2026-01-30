@@ -31,3 +31,6 @@ src-tauri/target/
 .env.local
 *.pem
 *.key
+
+# Personal signatures
+signatures/

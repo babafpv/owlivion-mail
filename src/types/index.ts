@@ -262,7 +262,7 @@ export interface ComposeProps {
 }
 
 // Settings page tab
-export type SettingsTab = 'accounts' | 'general' | 'ai' | 'shortcuts';
+export type SettingsTab = 'accounts' | 'general' | 'ai' | 'shortcuts' | 'signatures';
 
 // AI Reply request
 export interface AIReplyRequest {

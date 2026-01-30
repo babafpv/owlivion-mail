@@ -8,6 +8,7 @@ import { AccountSettings } from '../components/settings/AccountSettings';
 import { GeneralSettings } from '../components/settings/GeneralSettings';
 import { AISettings } from '../components/settings/AISettings';
 import { ShortcutsSettings } from '../components/settings/ShortcutsSettings';
+import { SignatureSettings } from '../components/settings/SignatureSettings';
 import { listAccounts } from '../services/mailService';
 import type { SettingsTab, Settings as SettingsType, Account } from '../types';
 
@@ -50,6 +51,15 @@ const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
     icon: (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+      </svg>
+    ),
+  },
+  {
+    id: 'signatures',
+    label: 'İmzalar',
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
       </svg>
     ),
   },
@@ -193,6 +203,12 @@ export function Settings({ onBack }: SettingsProps) {
             />
           )}
           {activeTab === 'shortcuts' && <ShortcutsSettings />}
+          {activeTab === 'signatures' && (
+            <SignatureSettings
+              accounts={accounts}
+              onAccountsChange={setAccounts}
+            />
+          )}
         </div>
       </div>
     </div>

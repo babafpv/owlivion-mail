@@ -269,41 +269,43 @@ function MailPanel({
   // Build folder tree
   const folderTree = useMemo(() => buildFolderTree(imapFolders), [imapFolders]);
 
-  // Get main folders (inbox, sent, drafts, trash) for quick access tabs
+  // Get main folders (INBOX, Draft, Sent, Trash) for quick access tabs
   const mainFolders = useMemo(() => {
-    const main: { path: string; name: string; type: string; icon: React.ReactElement; count: number }[] = [];
-    const addedTypes = new Set<string>();
+    const folders: { [key: string]: { path: string; name: string; type: string; icon: React.ReactElement; count: number } } = {};
 
     for (const folder of imapFolders) {
       const type = folder.folder_type.toLowerCase();
       const nameLower = folder.name.toLowerCase();
 
-      if ((type === 'inbox' || nameLower === 'inbox') && !addedTypes.has('inbox')) {
-        main.push({ path: folder.path, name: 'Inbox', type: 'inbox', icon: <Icons.Inbox />, count: folder.unread_count });
-        addedTypes.add('inbox');
-      } else if ((type === 'sent' || nameLower.includes('sent')) && !addedTypes.has('sent')) {
-        main.push({ path: folder.path, name: 'Sent', type: 'sent', icon: <Icons.Send />, count: 0 });
-        addedTypes.add('sent');
-      } else if ((type === 'drafts' || nameLower.includes('draft')) && !addedTypes.has('drafts')) {
-        main.push({ path: folder.path, name: 'Drafts', type: 'drafts', icon: <Icons.File />, count: folder.total_count });
-        addedTypes.add('drafts');
-      } else if ((type === 'trash' || nameLower.includes('trash') || nameLower.includes('deleted')) && !addedTypes.has('trash')) {
-        main.push({ path: folder.path, name: 'Trash', type: 'trash', icon: <Icons.Trash />, count: 0 });
-        addedTypes.add('trash');
+      if ((type === 'inbox' || nameLower === 'inbox') && !folders.inbox) {
+        folders.inbox = { path: folder.path, name: 'INBOX', type: 'inbox', icon: <Icons.Inbox />, count: folder.unread_count };
+      } else if ((type === 'drafts' || nameLower.includes('draft')) && !folders.drafts) {
+        folders.drafts = { path: folder.path, name: 'Draft', type: 'drafts', icon: <Icons.File />, count: folder.total_count };
+      } else if ((type === 'sent' || nameLower.includes('sent')) && !folders.sent) {
+        folders.sent = { path: folder.path, name: 'Sent', type: 'sent', icon: <Icons.Send />, count: 0 };
+      } else if ((type === 'trash' || nameLower.includes('trash') || nameLower.includes('deleted')) && !folders.trash) {
+        folders.trash = { path: folder.path, name: 'Trash', type: 'trash', icon: <Icons.Trash />, count: 0 };
       }
     }
 
+    // Return in order: INBOX, Draft, Sent, Trash
+    const ordered = [];
+    if (folders.inbox) ordered.push(folders.inbox);
+    if (folders.drafts) ordered.push(folders.drafts);
+    if (folders.sent) ordered.push(folders.sent);
+    if (folders.trash) ordered.push(folders.trash);
+
     // If no IMAP folders, show default static folders
-    if (main.length === 0) {
+    if (ordered.length === 0) {
       return [
-        { path: 'INBOX', name: 'Inbox', type: 'inbox', icon: <Icons.Inbox />, count: emails.filter(e => !e.read).length },
+        { path: 'INBOX', name: 'INBOX', type: 'inbox', icon: <Icons.Inbox />, count: emails.filter(e => !e.read).length },
+        { path: 'Drafts', name: 'Draft', type: 'drafts', icon: <Icons.File />, count: 0 },
         { path: 'Sent', name: 'Sent', type: 'sent', icon: <Icons.Send />, count: 0 },
-        { path: 'Drafts', name: 'Drafts', type: 'drafts', icon: <Icons.File />, count: 0 },
         { path: 'Trash', name: 'Trash', type: 'trash', icon: <Icons.Trash />, count: 0 },
       ];
     }
 
-    return main;
+    return ordered;
   }, [imapFolders, emails]);
 
   // Static starred folder (filtered locally)
